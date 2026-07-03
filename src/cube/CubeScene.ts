@@ -87,9 +87,6 @@ export class CubeScene {
       this.cubeGroup
     );
 
-    // Connect force trigger
-    this.interaction.onForceTrigger = () => this.activateForceMode();
-
     // Connect move listener
     this.cube.setOnMove((move) => this.handleMoveExecuted(move));
 
