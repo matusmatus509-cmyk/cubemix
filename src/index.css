@@ -167,7 +167,6 @@ html, body {
   align-items: center;
   justify-content: center;
   min-height: 0;
-  overflow: hidden;
   width: 100%;
   padding: 4px 4px;
 }
@@ -179,16 +178,13 @@ html, body {
   min-height: 0;
   flex: 1;
   cursor: grab;
-  overflow: hidden;
   touch-action: none;
-  border-radius: 8px;
 }
 .canvas-wrap:active { cursor: grabbing; }
 .canvas-wrap canvas {
   display: block;
   width: 100% !important;
   height: 100% !important;
-  border-radius: 8px;
 }
 
 /* ── BOTTOM TOOLBAR ── */
