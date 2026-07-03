@@ -43,9 +43,6 @@ interface PointerState {
   candidates: CandidateDrag[] | null;
   drag: DragState | null;
   cubeGroupRotating: boolean;
-  // Force trigger
-  forceTriggerTimer: number | null;
-  forceTriggerStart: { x: number; y: number } | null;
 }
 
 export class CubeInteraction {
@@ -58,11 +55,6 @@ export class CubeInteraction {
 
   private readonly MIN_DRAG_PX = 8;
   private readonly ORBIT_SENSITIVITY = 0.008;
-  private readonly FORCE_TRIGGER_DELAY = 300; // ms
-  private readonly CORNER_THRESHOLD = 50;     // px from corner
-
-  // Callback for force trigger
-  onForceTrigger?: () => void;
 
   constructor(
     cube: RubiksCube,
@@ -86,8 +78,6 @@ export class CubeInteraction {
       down: false, startX: 0, startY: 0, lastX: 0, lastY: 0,
       hitPoint: null, hitNormalLocal: null, hitCubiePos: null,
       onCube: false, candidates: null, drag: null, cubeGroupRotating: false,
-      forceTriggerTimer: null,
-      forceTriggerStart: null,
     };
   }
 
@@ -252,20 +242,6 @@ export class CubeInteraction {
     this.ptr.lastX = p.x;
     this.ptr.lastY = p.y;
 
-    // Check for corner long-press (force trigger)
-    const rect = this.renderer.domElement.getBoundingClientRect();
-    const isInCorner =
-      (p.x - rect.left < this.CORNER_THRESHOLD || rect.right - p.x < this.CORNER_THRESHOLD) &&
-      (p.y - rect.top < this.CORNER_THRESHOLD || rect.bottom - p.y < this.CORNER_THRESHOLD);
-
-    if (isInCorner) {
-      this.ptr.forceTriggerStart = { x: p.x, y: p.y };
-      this.ptr.forceTriggerTimer = window.setTimeout(() => {
-        this.onForceTrigger?.();
-        this.ptr.forceTriggerTimer = null;
-      }, this.FORCE_TRIGGER_DELAY);
-    }
-
     // Raycast
     const hit = this.raycast(p.x, p.y);
     if (hit && hit.face) {
@@ -308,18 +284,6 @@ export class CubeInteraction {
     const p = this.pos(e);
     const dx = p.x - this.ptr.lastX;
     const dy = p.y - this.ptr.lastY;
-
-    // Cancel force trigger if moved too far
-    if (this.ptr.forceTriggerTimer && this.ptr.forceTriggerStart) {
-      const dist = Math.sqrt(
-        Math.pow(p.x - this.ptr.forceTriggerStart.x, 2) +
-        Math.pow(p.y - this.ptr.forceTriggerStart.y, 2)
-      );
-      if (dist > 15) {
-        clearTimeout(this.ptr.forceTriggerTimer);
-        this.ptr.forceTriggerTimer = null;
-      }
-    }
 
     if (!this.ptr.onCube) {
       // Whole-cube rotation
@@ -408,12 +372,6 @@ export class CubeInteraction {
 
   private onPointerUp = (_e: MouseEvent | TouchEvent) => {
     if (!this.ptr.down) return;
-
-    // Cancel force trigger timer
-    if (this.ptr.forceTriggerTimer) {
-      clearTimeout(this.ptr.forceTriggerTimer);
-      this.ptr.forceTriggerTimer = null;
-    }
 
     if (this.cube.isDragging()) {
       // If the finger paused before lifting, the flick is stale — ignore it.
