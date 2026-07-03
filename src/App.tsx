@@ -596,24 +596,50 @@ export default function App() {
   const busy = scrambling || solving;
 
   const lastTapRef = useRef<number>(0);
+  const lastTapPosRef = useRef<{ x: number; y: number } | null>(null);
 
-  // Global double-click / double-tap activates force mode anywhere on screen
-  const handleGlobalDoubleClick = useCallback(() => {
+  // Returns true if (x, y) is inside a corner zone (80px from any corner),
+  // but excludes the top-left corner where the hamburger button lives.
+  const isCornerZone = useCallback((x: number, y: number): boolean => {
+    const ZONE = 80;
+    const w = window.innerWidth;
+    const h = window.innerHeight;
+    const topLeft     = x < ZONE && y < ZONE; // excluded — hamburger button here
+    const topRight    = x > w - ZONE && y < ZONE;
+    const bottomLeft  = x < ZONE && y > h - ZONE;
+    const bottomRight = x > w - ZONE && y > h - ZONE;
+    return !topLeft && (topRight || bottomLeft || bottomRight);
+  }, []);
+
+  // Global double-click activates force mode only in corner zones
+  const handleGlobalDoubleClick = useCallback((e: React.MouseEvent) => {
+    if (!isCornerZone(e.clientX, e.clientY)) return;
     if (cubeSceneRef.current && !cubeSceneRef.current.isForceModeActive() && cubeSceneRef.current.getForceSnapshot()) {
       cubeSceneRef.current.activateForceMode();
     }
-  }, []);
+  }, [isCornerZone]);
 
-  // Touch double-tap (touchstart fires before dblclick on mobile)
-  const handleGlobalTouchStart = useCallback(() => {
+  // Touch double-tap — only in corner zones
+  const handleGlobalTouchStart = useCallback((e: React.TouchEvent) => {
+    const touch = e.touches[0];
+    if (!touch) return;
+    const x = touch.clientX;
+    const y = touch.clientY;
     const now = performance.now();
-    if (now - lastTapRef.current < 300) {
+    const prev = lastTapPosRef.current;
+    if (
+      now - lastTapRef.current < 300 &&
+      prev &&
+      isCornerZone(prev.x, prev.y) &&
+      isCornerZone(x, y)
+    ) {
       if (cubeSceneRef.current && !cubeSceneRef.current.isForceModeActive() && cubeSceneRef.current.getForceSnapshot()) {
         cubeSceneRef.current.activateForceMode();
       }
     }
     lastTapRef.current = now;
-  }, []);
+    lastTapPosRef.current = { x, y };
+  }, [isCornerZone]);
 
   const onTitleMouseDown = () => {
     titlePressTimer.current = window.setTimeout(() => {
@@ -631,8 +657,8 @@ export default function App() {
   return (
     <div
       className="app-root"
-      onDoubleClick={handleGlobalDoubleClick}
-      onTouchStart={handleGlobalTouchStart}
+      onDoubleClick={(e) => handleGlobalDoubleClick(e)}
+      onTouchStart={(e) => handleGlobalTouchStart(e)}
     >
 
       {/* Top bar */}
