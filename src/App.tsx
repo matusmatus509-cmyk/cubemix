@@ -513,7 +513,8 @@ export default function App() {
     });
     scene.onForceActiveChange = setForceActive;
 
-    // Apply force on startup if setting is enabled and a default preset exists
+    // If "force on startup" is enabled, pre-load the default preset snapshot so
+    // the cube looks completely normal — force activates only on double-click.
     const forceOnStartup = localStorage.getItem(FORCE_ON_STARTUP_KEY) === 'true';
     if (forceOnStartup) {
       const defId = localStorage.getItem(DEFAULT_PRESET_KEY);
@@ -522,7 +523,7 @@ export default function App() {
         const defPreset = presets.find(p => p.id === defId);
         if (defPreset) {
           scene.setForceSnapshotFromData(defPreset.forceSnapshot);
-          scene.activateForceMode();
+          // Do NOT activate force here — it will activate on double-click.
         }
       }
     }
