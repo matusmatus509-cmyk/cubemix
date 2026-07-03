@@ -327,12 +327,21 @@ export class CubeScene {
         this.cube.applyForceSnapshot(this.forceSnapshot, [face]);
         this.forcedFaces.add(face);
       }
+
+      // Phase 1 complete: check if every originally-hidden face is now forced.
+      // Hidden faces = all faces NOT in initialVisibleFaces.
+      const hiddenFacesAllForced =
+        (['U','D','F','B','L','R'] as FaceKey[]).every(f =>
+          this.initialVisibleFaces.has(f) || this.forcedFaces.has(f)
+        );
+
+      if (hiddenFacesAllForced && this.forcedFaces.size < 6) {
+        // Small delay so the last hidden-face swap is visible before phase 2 fires
+        setTimeout(() => this.executePhase2(), 120);
+      }
     }
 
-    // Only complete once EVERY face has force colors. This means the three
-    // originally-visible faces will each get forced as they rotate out of view;
-    // when the last one is hidden and forced, all six faces are force and the
-    // sequence finishes.
+    // Safety: if all 6 faces are forced, clean up
     if (this.forcedFaces.size >= 6) {
       this.forceModeActive = false;
       this.phase1Completed = false;
@@ -379,7 +388,7 @@ export class CubeScene {
   }
 
   private executePhase2() {
-    if (!this.forceSnapshot || !this.phase1Completed) return;
+    if (!this.forceSnapshot) return;
 
     // Remaining faces are initially visible faces that haven't been forced yet
     const remainingFaces: FaceKey[] = [];
