@@ -108,8 +108,8 @@ export class RubiksCube {
           const bodyGeo = new RoundedBoxGeometry(CUBIE_SIZE, CUBIE_SIZE, CUBIE_SIZE, BODY_SEGMENTS, BODY_RADIUS);
           const bodyMat = new THREE.MeshPhongMaterial({
             color: 0x080808,
-            shininess: 60,
-            specular: new THREE.Color(0x222222),
+            shininess: 0,
+            specular: new THREE.Color(0x000000),
           });
           const body = new THREE.Mesh(bodyGeo, bodyMat);
           group.add(body);
@@ -162,8 +162,8 @@ export class RubiksCube {
       const geo = createRoundedStickerGeometry(STICKER_SCALE, STICKER_SCALE * STICKER_CORNER_RADIUS);
       const mat = new THREE.MeshPhongMaterial({
         color: new THREE.Color(color),
-        shininess: 180,
-        specular: new THREE.Color(0xaaaaaa),
+        shininess: 0,
+        specular: new THREE.Color(0x000000),
       });
       const sticker = new THREE.Mesh(geo, mat);
       sticker.position.set(...fc.pos);
@@ -833,8 +833,8 @@ export class RubiksCube {
       const geo = createRoundedStickerGeometry(STICKER_SCALE, STICKER_SCALE * STICKER_CORNER_RADIUS);
       const mat = new THREE.MeshPhongMaterial({
         color: new THREE.Color(colorHex),
-        shininess: 180,
-        specular: new THREE.Color(0xaaaaaa),
+        shininess: 0,
+        specular: new THREE.Color(0x000000),
       });
       const sticker = new THREE.Mesh(geo, mat);
       sticker.position.set(...pos);
