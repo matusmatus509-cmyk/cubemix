@@ -1,11 +1,9 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { CubeScene } from './cube/CubeScene';
-import { isSolved, MoveType } from './cube/CubeState';
-import { ForceCubieSnapshot } from './cube/RubiksCube';
+import { isSolved, MoveType, CubeStateData } from './cube/CubeState';
 
 const PRESET_STORAGE_KEY = 'cubemix_presets';
 const DEFAULT_PRESET_KEY = 'cubemix_default_preset';
-const FORCE_ON_STARTUP_KEY = 'cubemix_force_on_startup';
 const MAX_PRESETS = 5;
 const BG_STORAGE_KEY = 'cubemix_bg';
 const SHOW_TITLE_KEY = 'cubemix_show_title';
@@ -13,7 +11,7 @@ const SHOW_TITLE_KEY = 'cubemix_show_title';
 interface Preset {
   id: string;
   name: string;
-  forceSnapshot: ForceCubieSnapshot[];
+  forceSnapshot: CubeStateData;
   savedAt: number;
 }
 
@@ -66,7 +64,6 @@ function ForcePanel({
     const [nameInput, setNameInput] = useState('');
     const [bgUrl, setBgUrl] = useState<string>(() => localStorage.getItem(BG_STORAGE_KEY) ?? '');
     const [showTitle, setShowTitle] = useState<boolean>(() => localStorage.getItem(SHOW_TITLE_KEY) !== 'false');
-    const [forceOnStartup, setForceOnStartup] = useState<boolean>(() => localStorage.getItem(FORCE_ON_STARTUP_KEY) === 'true');
     const bgInputRef = useRef<HTMLInputElement>(null);
 
     useEffect(() => {
@@ -80,7 +77,6 @@ function ForcePanel({
         setNameInput('');
         setBgUrl(localStorage.getItem(BG_STORAGE_KEY) ?? '');
         setShowTitle(localStorage.getItem(SHOW_TITLE_KEY) !== 'false');
-        setForceOnStartup(localStorage.getItem(FORCE_ON_STARTUP_KEY) === 'true');
         // Apply default preset as force snapshot on open (does not change cube visual state)
         const defId = localStorage.getItem(DEFAULT_PRESET_KEY);
         if (defId && cubeScene) {
@@ -119,12 +115,6 @@ function ForcePanel({
       setShowTitle(next);
       localStorage.setItem(SHOW_TITLE_KEY, String(next));
       onTitleToggle(next);
-    };
-
-    const handleForceOnStartupToggle = () => {
-      const next = !forceOnStartup;
-      setForceOnStartup(next);
-      localStorage.setItem(FORCE_ON_STARTUP_KEY, String(next));
     };
 
     if (!isOpen) return null;
@@ -177,14 +167,12 @@ function ForcePanel({
 
     const handleSetDefault = (id: string) => {
       if (defaultPresetId === id) {
-        // Unpin
         localStorage.removeItem(DEFAULT_PRESET_KEY);
         setDefaultPresetId(null);
         setStatus('Predvolený preset zrušený');
       } else {
         localStorage.setItem(DEFAULT_PRESET_KEY, id);
         setDefaultPresetId(id);
-        // Set as force snapshot immediately (does not change cube state)
         const preset = presets.find(p => p.id === id);
         if (preset && cubeScene) {
           cubeScene.setForceSnapshotFromData(preset.forceSnapshot);
@@ -219,8 +207,7 @@ function ForcePanel({
               </button>
             </div>
             <div className="force-hint">
-              <p><strong>Fáza 1:</strong> Dvojité ťuknutie na stred-vrch aktivuje Force Mode. Skryté plochy si udržiavajú farby.</p>
-              <p><strong>Fáza 2:</strong> Otočte kocku aby boli pôvodne viditeľné plochy skryté, potom urobte L a potom L&apos;.</p>
+              <p>Force je vždy aktívny. Skryté plochy zobrazujú Force Cube, viditeľné plochy zobrazujú skutočnú kocku. Nie je potrebná žiadna aktivácia.</p>
             </div>
 
             {/* ── Divider ── */}
@@ -276,29 +263,12 @@ function ForcePanel({
               </button>
             </div>
 
-            {/* ── Force on startup section ── */}
-            <div className="force-section-title">Force pri zapínaní</div>
-            <div className="title-toggle-row">
-              <div className="startup-toggle-text">
-                <span className="title-toggle-label">Aktivovať force pri spustení</span>
-                <span className="startup-toggle-hint">Vyžaduje predvolený preset (hviezdička)</span>
-              </div>
-              <button
-                className={`toggle-switch ${forceOnStartup ? 'toggle-on' : ''}`}
-                onClick={handleForceOnStartupToggle}
-                aria-pressed={forceOnStartup}
-                aria-label="Aktivovať force pri spustení"
-              >
-                <span className="toggle-knob" />
-              </button>
-            </div>
-
             {/* ── Divider ── */}
             <div className="force-divider" />
 
             {/* ── Preset snapshots section ── */}
             <div className="force-section-title">Presety kocky</div>
-            <div className="preset-hint">Ťuknutím nastavíš preset ako force — kocka sa naň zafixuje pri ďalšom pohybe. Hviezdičkou nastavíš predvolený (automaticky sa nastaví ako force pri otvorení).</div>
+            <div className="preset-hint">Ťuknutím nastavíš preset ako force — skryté plochy sa okamžite zmenia na force farby. Hviezdičkou nastavíš predvolený (automaticky sa nastaví pri otvorení).</div>
 
             {presets.length === 0 && (
               <div className="force-status">Žiadne presety uložené</div>
@@ -494,7 +464,6 @@ export default function App() {
   const [solving, setSolving] = useState(false);
   const [showSolvedBanner, setShowSolvedBanner] = useState(false);
   const [showForcePanel, setShowForcePanel] = useState(false);
-  const [, setForceActive] = useState(false);
   const scrambleRef = useRef(false);
   const solveRef = useRef(false);
   const titlePressTimer = useRef<number | null>(null);
@@ -511,20 +480,14 @@ export default function App() {
         setTimeout(() => setShowSolvedBanner(false), 3000);
       }
     });
-    scene.onForceActiveChange = setForceActive;
 
-    // If "force on startup" is enabled, pre-load the default preset snapshot so
-    // the cube looks completely normal — force activates only on double-click.
-    const forceOnStartup = localStorage.getItem(FORCE_ON_STARTUP_KEY) === 'true';
-    if (forceOnStartup) {
-      const defId = localStorage.getItem(DEFAULT_PRESET_KEY);
-      if (defId) {
-        const presets = loadPresets();
-        const defPreset = presets.find(p => p.id === defId);
-        if (defPreset) {
-          scene.setForceSnapshotFromData(defPreset.forceSnapshot);
-          // Do NOT activate force here — it will activate on double-click.
-        }
+    // Auto-load the default preset as force snapshot on startup
+    const defId = localStorage.getItem(DEFAULT_PRESET_KEY);
+    if (defId) {
+      const presets = loadPresets();
+      const defPreset = presets.find(p => p.id === defId);
+      if (defPreset) {
+        scene.setForceSnapshotFromData(defPreset.forceSnapshot);
       }
     }
 
@@ -563,7 +526,7 @@ export default function App() {
   }, [scrambling, solving]);
 
   const handleSolve = useCallback(() => {
-    if (!cubeSceneRef.current || scrambling || solving || solved || cubeSceneRef.current.isForceModeActive()) return;
+    if (!cubeSceneRef.current || scrambling || solving || solved) return;
     const sequence = cubeSceneRef.current.getSolveSequence();
     if (sequence.length === 0) return;
     setSolving(true);
@@ -595,51 +558,6 @@ export default function App() {
 
   const busy = scrambling || solving;
 
-  const lastTapRef = useRef<number>(0);
-  const lastTapPosRef = useRef<{ x: number; y: number } | null>(null);
-
-  // Returns true only if (x, y) is within 80px of a corner — top-left excluded
-  // because the hamburger button lives there.
-  const isCornerZone = (x: number, y: number): boolean => {
-    const ZONE = 80;
-    const w = window.innerWidth;
-    const h = window.innerHeight;
-    const topRight    = x > w - ZONE && y < ZONE;
-    const bottomLeft  = x < ZONE && y > h - ZONE;
-    const bottomRight = x > w - ZONE && y > h - ZONE;
-    return topRight || bottomLeft || bottomRight;
-  };
-
-  // Double-click activates force mode only when clicked inside a corner zone
-  const handleGlobalDoubleClick = useCallback((e: React.MouseEvent) => {
-    if (!isCornerZone(e.clientX, e.clientY)) return;
-    if (cubeSceneRef.current && !cubeSceneRef.current.isForceModeActive() && cubeSceneRef.current.getForceSnapshot()) {
-      cubeSceneRef.current.activateForceMode();
-    }
-  }, []);
-
-  // Touch double-tap — both taps must land in a corner zone
-  const handleGlobalTouchStart = useCallback((e: React.TouchEvent) => {
-    const touch = e.touches[0];
-    if (!touch) return;
-    const x = touch.clientX;
-    const y = touch.clientY;
-    const now = performance.now();
-    const prev = lastTapPosRef.current;
-    if (
-      now - lastTapRef.current < 300 &&
-      prev &&
-      isCornerZone(prev.x, prev.y) &&
-      isCornerZone(x, y)
-    ) {
-      if (cubeSceneRef.current && !cubeSceneRef.current.isForceModeActive() && cubeSceneRef.current.getForceSnapshot()) {
-        cubeSceneRef.current.activateForceMode();
-      }
-    }
-    lastTapRef.current = now;
-    lastTapPosRef.current = { x, y };
-  }, []);
-
   const onTitleMouseDown = () => {
     titlePressTimer.current = window.setTimeout(() => {
       setShowForcePanel(true);
@@ -654,11 +572,7 @@ export default function App() {
   };
 
   return (
-    <div
-      className="app-root"
-      onDoubleClick={(e) => handleGlobalDoubleClick(e)}
-      onTouchStart={(e) => handleGlobalTouchStart(e)}
-    >
+    <div className="app-root">
 
       {/* Top bar */}
       <header className="topbar">
