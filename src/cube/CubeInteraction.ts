@@ -286,9 +286,13 @@ export class CubeInteraction {
     const dy = p.y - this.ptr.lastY;
 
     if (!this.ptr.onCube) {
-      // Whole-cube rotation
-      this.ptr.cubeGroupRotating = true;
-      this.rotateCubeByScreenDelta(dx, dy);
+      // Whole-cube rotation — locked while the force layer is armed and the cube
+      // has not been mixed enough to cover it. Swallowing the gesture silently
+      // is deliberate: a visible refusal would be a tell.
+      if (!this.cube.force.isRotationLocked()) {
+        this.ptr.cubeGroupRotating = true;
+        this.rotateCubeByScreenDelta(dx, dy);
+      }
       this.ptr.lastX = p.x;
       this.ptr.lastY = p.y;
       return;

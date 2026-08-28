@@ -31,6 +31,16 @@ const HIDE_DOT = 0.03;
 /** How far a forced face must turn into view before its colours are committed. */
 const REVEAL_DOT = -0.03;
 
+/**
+ * Layer turns required before the cube may be turned around.
+ *
+ * Straight after arming, the faces in view are still whatever the cube honestly
+ * was — most tellingly a solved cube. Turning it around at that point would put
+ * the force next to an obviously untouched face and give the whole thing away,
+ * so rotation stays locked until the cube has been mixed enough to cover it.
+ */
+export const MIN_TURNS_BEFORE_ROTATION = 5;
+
 export class ForceLayer {
   /** The live target. Null once the force has been fully revealed or cleared. */
   private target: CubeStateData | null = null;
@@ -41,6 +51,8 @@ export class ForceLayer {
   };
   /** Faces already shown wearing the force. They are never forced again. */
   private committed: Set<FaceKey> = new Set();
+  /** Layer turns since the force was armed — gates the rotation lock. */
+  private turnsSinceArm = 0;
 
   /** A force is configured (whether or not it is still waiting to be seen). */
   isConfigured(): boolean { return this.configured !== null; }
@@ -64,6 +76,7 @@ export class ForceLayer {
     this.target = cloneCubeState(state);
     this.configured = cloneCubeState(state);
     this.committed.clear();
+    this.turnsSinceArm = 0;
     for (const face of FACE_KEYS) {
       this.mode[face] = dots[face] > 0 ? 'force' : 'real';
     }
@@ -74,7 +87,33 @@ export class ForceLayer {
     this.target = null;
     this.configured = null;
     this.committed.clear();
+    this.turnsSinceArm = 0;
     for (const face of FACE_KEYS) this.mode[face] = 'real';
+  }
+
+  /** Count a completed layer turn — this is what unlocks rotation. */
+  noteTurn() {
+    if (this.configured) this.turnsSinceArm++;
+  }
+
+  /**
+   * The cube may not be turned around yet, because it has not been mixed enough
+   * to cover the force waiting on the back faces.
+   *
+   * Only applies while a force is actually armed: once it has been delivered the
+   * cube can be shown from every side freely, which is the point of the trick.
+   */
+  isRotationLocked(): boolean {
+    return this.target !== null && this.turnsSinceArm < MIN_TURNS_BEFORE_ROTATION;
+  }
+
+  /**
+   * The force has been delivered but is still configured, so arming it again
+   * lets the same force be performed over and over without a reset: mix the cube
+   * away from it, and the layer goes right back onto the unseen faces.
+   */
+  needsRearm(): boolean {
+    return this.configured !== null && this.target === null;
   }
 
   modeOf(face: FaceKey): FaceRenderMode {
@@ -132,5 +171,7 @@ export class ForceLayer {
     this.target = null;
     this.committed.clear();
     for (const face of FACE_KEYS) this.mode[face] = 'real';
+    // The turn counter is deliberately left alone: the cube has just been shown
+    // from every side, so it must stay free to turn until mixing starts again.
   }
 }
