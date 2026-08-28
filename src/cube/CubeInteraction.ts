@@ -332,12 +332,6 @@ export class CubeInteraction {
             velocity: 0,
           };
         }
-
-        // Cancel force trigger when dragging
-        if (this.ptr.forceTriggerTimer) {
-          clearTimeout(this.ptr.forceTriggerTimer);
-          this.ptr.forceTriggerTimer = null;
-        }
       }
     }
 

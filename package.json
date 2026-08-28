@@ -7,6 +7,7 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
+    "verify": "bun scripts/verify-move-consistency.ts && bun scripts/verify-force-layer.ts",
     "deploy": "vite build && gh-pages -d dist"
   },
   "dependencies": {
