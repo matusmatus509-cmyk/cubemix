@@ -227,7 +227,9 @@ function ForcePanel({
             <div className="force-hint">
               <p><strong>Žiadne dvojkliknutie.</strong> Force sedí na skrytých stranách automaticky, stále.</p>
               <p><strong>Otáčanie vrstiev</strong> vyzerá úplne normálne — kocka má reálne farby.</p>
+              <p><strong>Prvých 5 ťahov</strong> sa kocka nedá otáčať celá — je zamknutá, kým sa force neprikryje.</p>
               <p><strong>Keď kockou otočíš</strong>, odkryté strany už majú force a ostanú tak. Nové skryté strany si vezmú ďalšiu časť force.</p>
+              <p><strong>Po dokončení</strong> sa force sám vráti, len čo kocku znova zamiešaš — dá sa opakovať bez resetu.</p>
             </div>
 
             {/* ── Divider ── */}

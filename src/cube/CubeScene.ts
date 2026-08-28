@@ -208,6 +208,11 @@ export class CubeScene {
     return this.cube.force.isRevealing();
   }
 
+  /** True while the cube may not be turned around — not mixed enough yet. */
+  isRotationLocked(): boolean {
+    return this.cube.force.isRotationLocked();
+  }
+
   /** Load a force layer from a saved preset. It is live from this moment on. */
   setForceSnapshotFromData(snapshots: ForceCubieSnapshot[]) {
     this.armForce(snapshotToCubeState(snapshots));
@@ -304,6 +309,16 @@ export class CubeScene {
   private handleMoveExecuted(move: MoveType) {
     // Notify listeners of every executed move (used for the move counter).
     this.onUserMove?.(move);
+
+    // A force that has already been delivered goes back on as soon as the cube
+    // is mixed away from it, so the same force can be performed again and again.
+    // Re-arm before counting, so this turn already counts toward the lock.
+    if (this.cube.force.needsRearm()) {
+      const configured = this.cube.force.configuredState();
+      if (configured) this.armForce(configured);
+    }
+
+    this.cube.force.noteTurn();
   }
 
   destroy() {

@@ -10,8 +10,8 @@
  * Run: bun scripts/verify-force-layer.ts
  */
 import { applyMove, createSolvedState, type CubeStateData, type FaceColor, type FaceKey, type MoveType } from '../src/cube/CubeState';
-import { FACE_KEYS, cloneCubeState } from '../src/cube/CubeLayout';
-import { ForceLayer } from '../src/cube/ForceLayer';
+import { FACE_KEYS } from '../src/cube/CubeLayout';
+import { ForceLayer, MIN_TURNS_BEFORE_ROTATION } from '../src/cube/ForceLayer';
 
 /** Facing values for a cube seen from a given corner: three faces in view. */
 function dotsFor(visible: FaceKey[]): Record<FaceKey, number> {
@@ -54,15 +54,38 @@ class Model {
     if (update.finished) this.force.retire();
   }
 
+  /** One layer turn, followed by CubeScene.handleMoveExecuted. */
   turn(move: MoveType) {
     this.real = applyMove(this.real, move);
+    if (this.force.needsRearm()) {
+      const configured = this.force.configuredState();
+      if (configured) this.arm(configured);
+    }
+    this.force.noteTurn();
     this.tick();
   }
 
-  /** Rotate the whole cube so a different set of three faces is in view. */
-  lookAt(visible: FaceKey[]) {
+  /**
+   * Rotate the whole cube so a different set of three faces is in view.
+   * Returns false when the force layer has rotation locked.
+   */
+  lookAt(visible: FaceKey[]): boolean {
+    if (this.force.isRotationLocked()) return false;
     this.visible = visible;
     this.tick();
+    return true;
+  }
+
+  /** Enough turns to unlock rotation. */
+  mix(): void {
+    const moves: MoveType[] = ['R', "U'", 'F', 'L', "D'", 'B'];
+    for (let i = 0; i < MIN_TURNS_BEFORE_ROTATION; i++) this.turn(moves[i % moves.length]);
+  }
+
+  /** Turn the cube right around, so every face is shown. */
+  turnAround(): void {
+    this.lookAt(['D', 'B', 'L']);
+    this.lookAt(['U', 'F', 'R']);
   }
 }
 
@@ -135,12 +158,33 @@ console.log('\nMixing while the force sits on the unseen faces');
   check('still nothing committed', m.revealed.size === 0);
 }
 
+console.log('\nThe cube is locked until it has been mixed');
+{
+  const m = new Model();
+  m.arm(makeForce());
+
+  check('cannot be turned around straight after arming', !m.lookAt(['D', 'B', 'L']));
+  check('the faces in view did not change', m.visible.join('') === 'UFR');
+
+  for (let i = 0; i < MIN_TURNS_BEFORE_ROTATION - 1; i++) m.turn('R');
+  check(`still locked after ${MIN_TURNS_BEFORE_ROTATION - 1} turns`, !m.lookAt(['D', 'B', 'L']));
+
+  m.turn('R');
+  check(`unlocked on turn ${MIN_TURNS_BEFORE_ROTATION}`, m.lookAt(['D', 'B', 'L']));
+}
+
+console.log('\nWith no force configured the cube always turns freely');
+{
+  const m = new Model();
+  check('rotation is not locked', m.lookAt(['D', 'B', 'L']));
+}
+
 console.log('\nTurning the cube around reveals the force');
 {
   const m = new Model();
   const force = makeForce();
   m.arm(force);
-  for (const move of ['R', "U'", 'F'] as MoveType[]) m.turn(move);
+  m.mix();
 
   const nowVisible: FaceKey[] = m.visible.map(f => OPPOSITE[f]);
   const shownBefore = nowVisible.map(f => m.displayed(f).join(''));
@@ -163,10 +207,8 @@ console.log('\nA full turn-around leaves the cube equal to the force');
   const m = new Model();
   const force = makeForce();
   m.arm(force);
-  for (const move of ['R', "U'", 'F', 'L', "D'"] as MoveType[]) m.turn(move);
-
-  m.lookAt(['D', 'B', 'L']);
-  m.lookAt(['U', 'F', 'R']);
+  m.mix();
+  m.turnAround();
 
   check('all six faces were revealed', m.revealed.size === 6);
   check('the real cube now IS the force', statesEqual(m.real, force),
@@ -175,28 +217,45 @@ console.log('\nA full turn-around leaves the cube equal to the force');
   check('the force is still remembered for the next reset', m.force.isConfigured());
 }
 
-console.log('\nAfter the reveal the cube is honest again');
+console.log('\nRight after the reveal the cube is free to show every side');
 {
   const m = new Model();
-  const force = makeForce();
-  m.arm(force);
-  m.lookAt(['D', 'B', 'L']);
-  m.lookAt(['U', 'F', 'R']);
+  m.arm(makeForce());
+  m.mix();
+  m.turnAround();
 
-  const expected = applyMove(cloneCubeState(m.real), 'R');
-  m.turn('R');
-  check('a turn after the reveal shows exactly the real state',
-    FACE_KEYS.every(f => faceEq(m.displayed(f), expected[f])));
+  check('the force retired', !m.force.isArmed());
+  check('rotation is unlocked', !m.force.isRotationLocked());
+  const before = FACE_KEYS.map(f => m.displayed(f).join(''));
   m.lookAt(['D', 'B', 'L']);
-  check('turning the cube around no longer changes anything',
-    FACE_KEYS.every(f => faceEq(m.displayed(f), expected[f])));
+  check('turning it around shows the same cube from the other side',
+    FACE_KEYS.map(f => m.displayed(f).join('')).join('|') === before.join('|'));
 }
 
-console.log('\nA face is never re-forced after it has been shown');
+console.log('\nThe same force can be performed again, without a reset');
 {
   const m = new Model();
   const force = makeForce();
   m.arm(force);
+  m.mix();
+  m.turnAround();
+  check('first performance landed the force', statesEqual(m.real, force));
+
+  m.turn('R');
+  check('mixing puts the force straight back on the unseen faces', m.force.isArmed());
+  check('and locks the cube again', m.force.isRotationLocked());
+
+  m.mix();
+  m.turnAround();
+  check('the cube is the force once more', statesEqual(m.real, force),
+    FACE_KEYS.map(f => `${f} real=${m.real[f].join('')} force=${force[f].join('')}`).join('\n          '));
+}
+
+console.log('\nA face is never re-forced within one performance');
+{
+  const m = new Model();
+  m.arm(makeForce());
+  m.mix();
   m.lookAt(['D', 'B', 'L']);       // D, B, L revealed and committed
   m.turn('R');                     // honest turn, mixes committed + armed faces
   const afterTurn = FACE_KEYS.map(f => m.displayed(f).join(''));
