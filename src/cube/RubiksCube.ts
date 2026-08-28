@@ -1,6 +1,15 @@
 import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
 import { CubeStateData, FACE_COLORS, applyMove, MoveType, FaceKey, FaceColor, createSolvedState } from './CubeState';
+import {
+  FACE_KEYS,
+  FACE_NORMAL,
+  cloneCubeState,
+  cubieOnFace,
+  faceCubiePositions,
+  stickerIndexOnFace,
+} from './CubeLayout';
+import { ForceLayer } from './ForceLayer';
 
 export const CUBIE_SIZE = 1;
 export const GAP = 0.055;
@@ -56,6 +65,82 @@ const createRoundedStickerGeometry = (size: number, radius: number): THREE.Shape
   return new THREE.ShapeGeometry(shape, 6);
 };
 
+export function faceNormalVec(face: FaceKey): THREE.Vector3 {
+  const [x, y, z] = FACE_NORMAL[face];
+  return new THREE.Vector3(x, y, z);
+}
+
+/** Nearest palette entry for a stored hex colour (presets keep raw hex). */
+function colorKeyFromHex(hex: string): FaceColor {
+  const target = new THREE.Color(hex);
+  let best: FaceColor = 'X';
+  let bestDist = Infinity;
+  for (const [key, value] of Object.entries(FACE_COLORS)) {
+    const c = new THREE.Color(value);
+    const d = (c.r - target.r) ** 2 + (c.g - target.g) ** 2 + (c.b - target.b) ** 2;
+    if (d < bestDist) { bestDist = d; best = key as FaceColor; }
+  }
+  return best;
+}
+
+/**
+ * Convert a stored per-cubie snapshot into a per-face cube state.
+ *
+ * Presets are persisted as cubie snapshots (sticker colours keyed by the label
+ * the sticker was born with, plus the rotation the cubie had at capture time),
+ * so for every face slot we rotate each sticker normal by the snapshot
+ * quaternion and keep the one that ends up pointing at that face.
+ */
+export function snapshotToCubeState(snapshots: ForceCubieSnapshot[]): CubeStateData {
+  const state = createSolvedState();
+  for (const face of FACE_KEYS) {
+    const colors: FaceColor[] = Array(9).fill('X');
+    const targetNormal = faceNormalVec(face);
+    for (const pos of faceCubiePositions(face)) {
+      const snap = snapshots.find(s =>
+        s.logicalPos.x === pos.x && s.logicalPos.y === pos.y && s.logicalPos.z === pos.z);
+      if (!snap) continue;
+      const quat = new THREE.Quaternion(
+        snap.quaternion.x, snap.quaternion.y, snap.quaternion.z, snap.quaternion.w,
+      );
+      for (const [label, hex] of Object.entries(snap.stickerColors)) {
+        if (!(label in FACE_NORMAL)) continue;
+        const dir = faceNormalVec(label as FaceKey).applyQuaternion(quat).normalize();
+        if (dir.dot(targetNormal) > 0.9) {
+          colors[stickerIndexOnFace(pos.x, pos.y, pos.z, face)] = colorKeyFromHex(hex);
+          break;
+        }
+      }
+    }
+    state[face] = colors;
+  }
+  return state;
+}
+
+/** Convert a per-face cube state into the persisted snapshot format. */
+export function cubeStateToSnapshot(state: CubeStateData): ForceCubieSnapshot[] {
+  const snapshots: ForceCubieSnapshot[] = [];
+  for (let x = -1; x <= 1; x++) {
+    for (let y = -1; y <= 1; y++) {
+      for (let z = -1; z <= 1; z++) {
+        const stickerColors: Record<string, string> = {};
+        for (const face of FACE_KEYS) {
+          if (!cubieOnFace(x, y, z, face)) continue;
+          const key = state[face][stickerIndexOnFace(x, y, z, face)];
+          stickerColors[face] = FACE_COLORS[key] ?? FACE_COLORS['X'];
+        }
+        snapshots.push({
+          logicalPos: { x, y, z },
+          position: { x: x * TOTAL, y: y * TOTAL, z: z * TOTAL },
+          quaternion: { x: 0, y: 0, z: 0, w: 1 },
+          stickerColors,
+        });
+      }
+    }
+  }
+  return snapshots;
+}
+
 export class RubiksCube {
   scene: THREE.Scene;
   cubeGroup: THREE.Group;
@@ -72,6 +157,17 @@ export class RubiksCube {
   // this window the cubies are still parented to a pivot, so no new drag may
   // begin until finalizeDrag reparents them.
   private isSettling = false;
+
+  // ── Force layer ──
+  // The second, hidden layer of colours. It is pinned to cube-local face slots
+  // rather than to cubies, so a face showing the force always shows exactly the
+  // programmed target no matter how much mixing has happened. `cubeState` above
+  // stays the honest cube the whole time.
+  readonly force = new ForceLayer();
+  // Cubies that are mid-turn. A turning layer can swing a hidden sticker into
+  // view, so those cubies always render the real state — that is what keeps
+  // ordinary layer turns looking like an ordinary cube.
+  private movingCubies: Set<Cubie> = new Set();
 
   constructor(scene: THREE.Scene, cubeGroup: THREE.Group, initialState: CubeStateData) {
     this.scene = scene;
@@ -125,28 +221,19 @@ export class RubiksCube {
         }
       }
     }
+
+    this.repaintStickers();
   }
 
-  private getStickerColor(state: CubeStateData, x: number, y: number, z: number, face: string): string {
-    let row = 0, col = 0;
-    switch (face) {
-      case 'U': row = 1 - z; col = x + 1; break;
-      case 'D': row = z + 1; col = x + 1; break;
-      case 'F': row = 1 - y; col = x + 1; break;
-      case 'B': row = 1 - y; col = 1 - x; break;
-      case 'L': row = 1 - y; col = z + 1; break;
-      case 'R': row = 1 - y; col = 1 - z; break;
-    }
-    const idx = row * 3 + col;
-    const faceKey = face as keyof CubeStateData;
-    const colorKey = state[faceKey][idx];
+  private getStickerColor(state: CubeStateData, x: number, y: number, z: number, face: FaceKey): string {
+    const colorKey = state[face][stickerIndexOnFace(x, y, z, face)];
     return FACE_COLORS[colorKey] || FACE_COLORS['X'];
   }
 
   private createCubieStickers(group: THREE.Group, x: number, y: number, z: number, state: CubeStateData) {
     const half = CUBIE_SIZE / 2 + STICKER_DEPTH;
 
-    type FaceConfig = { face: string; condition: boolean; pos: [number, number, number]; rot: [number, number, number] };
+    type FaceConfig = { face: FaceKey; condition: boolean; pos: [number, number, number]; rot: [number, number, number] };
     const faces: FaceConfig[] = [
       { face: 'R', condition: x === 1,  pos: [half, 0, 0],  rot: [0, Math.PI / 2, 0] },
       { face: 'L', condition: x === -1, pos: [-half, 0, 0], rot: [0, -Math.PI / 2, 0] },
@@ -174,28 +261,6 @@ export class RubiksCube {
       sticker.userData.normal = localNormal;
       group.add(sticker);
     }
-  }
-
-  /** Update stickers on a single cubie to match current state */
-  refreshCubieStickers(cubieIndex: number) {
-    const cubie = this.cubies[cubieIndex];
-    const { x, y, z } = cubie.logicalPos;
-
-    // Remove old stickers
-    const stickersToRemove: THREE.Mesh[] = [];
-    cubie.mesh.traverse((child) => {
-      if (child instanceof THREE.Mesh && child.userData.isSticker) {
-        stickersToRemove.push(child);
-      }
-    });
-    stickersToRemove.forEach(s => {
-      cubie.mesh.remove(s);
-      s.geometry.dispose();
-      if (s.material instanceof THREE.Material) s.material.dispose();
-    });
-
-    // Create new stickers
-    this.createCubieStickers(cubie.mesh, x, y, z, this.cubeState);
   }
 
   getCubiesInLayer(axis: AxisKey, value: number): Cubie[] {
@@ -229,6 +294,10 @@ export class RubiksCube {
       targetAngle: 0,
       currentAngle: 0,
     };
+
+    // The layer is about to swing: strip the force layer off every cubie in it
+    // before it moves, so nothing forced can ever rotate into view.
+    this.beginCubieMotion(cubies);
 
     return this.activeDrag;
   }
@@ -411,6 +480,10 @@ export class RubiksCube {
     // Layer is fully reparented and snapped — safe to accept new input again.
     this.isSettling = false;
 
+    // The layer has come to rest: whatever landed on a hidden face gets the
+    // force layer back (invisible), whatever landed in view keeps real colours.
+    this.endCubieMotion();
+
     this.onStateChangeCb?.(this.cubeState);
     if (move) {
       this.onMoveCb?.(move);
@@ -489,6 +562,7 @@ export class RubiksCube {
           cubie.mesh.position.z = Math.round(cubie.mesh.position.z / TOTAL) * TOTAL;
         }
         this.cubeGroup.remove(pivot);
+        this.endCubieMotion();
         onComplete();
       }
     };
@@ -529,6 +603,11 @@ export class RubiksCube {
       const cubies = this.getCubiesInLayer(axis, layer);
       const q = new THREE.Quaternion().setFromAxisAngle(axisVec, angle);
 
+      // Strip the force layer off the cubies that are about to swing, while they
+      // are still in their old slots — this has to happen before the state and
+      // the logical positions move, otherwise the wrong stickers get recoloured.
+      this.beginCubieMotion(cubies);
+
       for (const cubie of cubies) {
         cubie.logicalPos.applyQuaternion(q);
         cubie.logicalPos.x = Math.round(cubie.logicalPos.x);
@@ -561,366 +640,95 @@ export class RubiksCube {
     }
   }
 
-  // ─── Force Mode ─────────────────────────────────────────────
+  // ─── Force layer ────────────────────────────────────────────
+  //
+  // The cube carries two independent colour layers at all times:
+  //
+  //   1. the real state (`cubeState`) — the honest cube. Every turn, scramble
+  //      and solve acts on it and only on it.
+  //   2. the force layer (`force`) — the programmed target, pinned to cube-local
+  //      face slots so it survives any amount of mixing.
+  //
+  // A face shows the force while it is out of sight and the real state while it
+  // faces the viewer; CubeScene feeds the layer the cube's orientation each
+  // frame. Turning layers therefore looks like a perfectly ordinary cube, yet
+  // every face the viewer cannot see is already carrying the force.
 
   /**
-   * Get the sticker index (0-8) on a given face for a cubie at logicalPos
-   */
-  private getStickerIndexOnFace(logicalPos: THREE.Vector3, face: FaceKey): number {
-    const { x, y, z } = logicalPos;
-    let row = 0, col = 0;
-    switch (face) {
-      case 'U': row = 1 - z; col = x + 1; break;
-      case 'D': row = z + 1; col = x + 1; break;
-      case 'F': row = 1 - y; col = x + 1; break;
-      case 'B': row = 1 - y; col = 1 - x; break;
-      case 'L': row = 1 - y; col = z + 1; break;
-      case 'R': row = 1 - y; col = 1 - z; break;
-    }
-    return row * 3 + col;
-  }
-
-  /**
-   * Apply a complete force snapshot to the current cube.
-   * Only replaces cubies on the specified faces (hidden faces).
+   * Copy the force colours of one face into the real state.
    *
-   * BUG FIX: Edge and corner cubies belong to multiple faces.
-   * When a cubie sits on both a hidden face and a visible face,
-   * we must only update the sticker(s) that belong to the hidden face(s),
-   * leaving the visible-face stickers completely unchanged.
+   * Called the moment a forced face rotates into view: the colours the viewer is
+   * now looking at become the truth, so they can never change back. The swap
+   * itself is invisible — the face already displays exactly these colours — only
+   * the bookkeeping underneath changes.
    */
-  applyForceSnapshot(snapshots: ForceCubieSnapshot[], faces: FaceKey[]) {
-    if (!snapshots || snapshots.length === 0) return;
+  commitForceFace(face: FaceKey) {
+    const colors = this.force.targetColors(face);
+    if (!colors) return;
+    this.cubeState = cloneCubeState(this.cubeState);
+    this.cubeState[face] = colors;
+  }
 
-    const facesSet = new Set<FaceKey>(faces);
+  /** Mark cubies as mid-turn — while moving they always render real colours. */
+  private beginCubieMotion(cubies: Cubie[]) {
+    if (!this.force.isArmed()) return;
+    this.movingCubies = new Set(cubies);
+    this.repaintStickers();
+  }
 
-    // Build a map of which logical positions belong to each face
-    const facePositions = new Set<string>();
-    for (const face of faces) {
-      const positions = this.getFaceCubiePositions(face);
-      for (const pos of positions) {
-        facePositions.add(`${pos.x},${pos.y},${pos.z}`);
-      }
+  /** The turn has come to rest — go back to the normal per-face rule. */
+  private endCubieMotion() {
+    if (this.movingCubies.size === 0) return;
+    this.movingCubies.clear();
+    this.repaintStickers();
+  }
+
+  /**
+   * Recolour all 54 stickers from the two layers.
+   *
+   * For every face slot we resolve which cubie sits there and which of its
+   * stickers points outward, then paint it from the real state or the force
+   * layer depending on that face's render mode.
+   */
+  repaintStickers() {
+    const byPos = new Map<string, Cubie>();
+    for (const cubie of this.cubies) {
+      const key = `${Math.round(cubie.logicalPos.x)},${Math.round(cubie.logicalPos.y)},${Math.round(cubie.logicalPos.z)}`;
+      byPos.set(key, cubie);
     }
 
-    // Replace cubies that are on the target faces
-    for (let i = 0; i < this.cubies.length; i++) {
-      const cubie = this.cubies[i];
-      const key = `${cubie.logicalPos.x},${cubie.logicalPos.y},${cubie.logicalPos.z}`;
+    for (const face of FACE_KEYS) {
+      const forceColors = this.force.modeOf(face) === 'force'
+        ? this.force.targetColors(face)
+        : null;
 
-      if (!facePositions.has(key)) continue;
-
-      // Find matching snapshot cubie by logical position
-      const snap = snapshots.find(s =>
-        s.logicalPos.x === cubie.logicalPos.x &&
-        s.logicalPos.y === cubie.logicalPos.y &&
-        s.logicalPos.z === cubie.logicalPos.z
-      );
-
-      if (snap) {
-        // Determine which faces of THIS cubie are being forced.
-        // A cubie's faces are determined by its logical position:
-        // e.g. cubie at (1,-1,1) has faces R, D, F.
-        // Only update stickers for faces in the `facesSet`.
-        const cubieVisibleFaces = this.getCubieFaceKeys(cubie);
-        const forcedFacesForCubie = cubieVisibleFaces.filter(f => facesSet.has(f));
-
-        if (forcedFacesForCubie.length === cubieVisibleFaces.length) {
-          // ALL faces of this cubie are being forced — full replacement is safe
-          this.replaceCubieWithSnapshot(i, snap);
-        } else {
-          // Only SOME faces are forced — selectively update only those stickers
-          this.partialReplaceCubieStickers(cubie, snap, forcedFacesForCubie);
-        }
-      }
-    }
-
-    // Rebuild cubeState from visuals
-    this.rebuildCubeStateFromVisuals();
-    this.onStateChangeCb?.(this.cubeState);
-  }
-
-  /**
-   * Get the 9 logical positions of cubies on a given face.
-   */
-  private getFaceCubiePositions(face: FaceKey): { x: number; y: number; z: number }[] {
-    const positions: { x: number; y: number; z: number }[] = [];
-    for (let x = -1; x <= 1; x++) {
-      for (let y = -1; y <= 1; y++) {
-        for (let z = -1; z <= 1; z++) {
-          let onFace = false;
-          switch (face) {
-            case 'U': onFace = y === 1; break;
-            case 'D': onFace = y === -1; break;
-            case 'F': onFace = z === 1; break;
-            case 'B': onFace = z === -1; break;
-            case 'L': onFace = x === -1; break;
-            case 'R': onFace = x === 1; break;
-          }
-          if (onFace) positions.push({ x, y, z });
-        }
-      }
-    }
-    return positions;
-  }
-
-  /**
-   * Get the list of face keys that a cubie contributes stickers to,
-   * based on its logical position.
-   * E.g. cubie at (1, -1, 1) → ['R', 'D', 'F']
-   */
-  private getCubieFaceKeys(cubie: Cubie): FaceKey[] {
-    const result: FaceKey[] = [];
-    const { x, y, z } = cubie.logicalPos;
-    if (x === 1) result.push('R');
-    if (x === -1) result.push('L');
-    if (y === 1) result.push('U');
-    if (y === -1) result.push('D');
-    if (z === 1) result.push('F');
-    if (z === -1) result.push('B');
-    return result;
-  }
-
-  /**
-   * Partially update a cubie's stickers: only replace the sticker colors
-   * for the specified faces, leaving all other stickers unchanged.
-   * Does NOT change the cubie's quaternion or position.
-   */
-  private partialReplaceCubieStickers(cubie: Cubie, snapshot: ForceCubieSnapshot, facesToReplace: FaceKey[]) {
-    const facesSet = new Set<string>(facesToReplace);
-
-    for (const child of cubie.mesh.children) {
-      if (!child.userData.isSticker) continue;
-
-      // We need to figure out which cube face this sticker currently represents.
-      // The sticker's userData.face stores its ORIGINAL face label (at creation time).
-      // But after rotations, the cubie's quaternion has changed, so the sticker
-      // may now face a different direction.
-      //
-      // However, in the snapshot, the sticker colors are keyed by the ORIGINAL face label too.
-      // And the snapshot was taken when the cube was in a certain state.
-      //
-      // The face label on the sticker is the direction it was created for (e.g. 'R', 'U', 'F').
-      // Since the cubie has been rotated, this sticker now physically points in a different
-      // direction. We need to find which CUBE face this sticker is currently facing.
-      
-      const localNormal: THREE.Vector3 = child.userData.normal;
-      const currentNormal = localNormal.clone().applyQuaternion(cubie.mesh.quaternion).normalize();
-
-      // Find which cube face this sticker currently faces
-      const currentFace = this.normalToFaceKey(currentNormal);
-      if (!currentFace) continue;
-
-      // Only update if this sticker faces one of the faces we're forcing
-      if (facesSet.has(currentFace)) {
-        // Find what color this sticker should have from the snapshot.
-        // In the snapshot, sticker colors are keyed by the ORIGINAL face label.
-        // We need to find the snapshot sticker that, when the snapshot quaternion is applied,
-        // would face the same direction (currentFace).
-        //
-        // The snapshot stores: stickerColors keyed by original face label,
-        // and the quaternion the cubie had at snapshot time.
-        // At snapshot time, a sticker with label 'X' and normal for 'X',
-        // when rotated by snapshot.quaternion, faces some cube direction.
-        //
-        // We need: which snapshot sticker label, when rotated by snapshot.quaternion,
-        // gives us `currentFace`?
-        
-        const snapshotQuat = new THREE.Quaternion(
-          snapshot.quaternion.x, snapshot.quaternion.y,
-          snapshot.quaternion.z, snapshot.quaternion.w
-        );
-
-        let matchedColor: string | null = null;
-        for (const [origLabel, color] of Object.entries(snapshot.stickerColors)) {
-          // Compute which direction this snapshot sticker was facing
-          const stickerNormal = this.faceKeyToNormal(origLabel);
-          if (!stickerNormal) continue;
-          const snapshotFacingDir = stickerNormal.clone().applyQuaternion(snapshotQuat).normalize();
-          const snapshotFace = this.normalToFaceKey(snapshotFacingDir);
-          if (snapshotFace === currentFace) {
-            matchedColor = color;
-            break;
-          }
-        }
-
-        if (matchedColor && (child as THREE.Mesh).material instanceof THREE.MeshPhongMaterial) {
-          ((child as THREE.Mesh).material as THREE.MeshPhongMaterial).color.set(matchedColor);
-        }
-      }
-    }
-  }
-
-  /**
-   * Convert a world-space normal vector to a FaceKey.
-   * Returns null if the normal doesn't closely match any face.
-   */
-  private normalToFaceKey(normal: THREE.Vector3): FaceKey | null {
-    const threshold = 0.9;
-    if (normal.y > threshold) return 'U';
-    if (normal.y < -threshold) return 'D';
-    if (normal.z > threshold) return 'F';
-    if (normal.z < -threshold) return 'B';
-    if (normal.x < -threshold) return 'L';
-    if (normal.x > threshold) return 'R';
-    return null;
-  }
-
-  /**
-   * Get the local normal vector for a sticker originally created for a given face.
-   */
-  private faceKeyToNormal(face: string): THREE.Vector3 | null {
-    switch (face) {
-      case 'R': return new THREE.Vector3(1, 0, 0);
-      case 'L': return new THREE.Vector3(-1, 0, 0);
-      case 'U': return new THREE.Vector3(0, 1, 0);
-      case 'D': return new THREE.Vector3(0, -1, 0);
-      case 'F': return new THREE.Vector3(0, 0, 1);
-      case 'B': return new THREE.Vector3(0, 0, -1);
-      default: return null;
-    }
-  }
-
-  /**
-   * Replace a cubie's stickers with those from a snapshot.
-   */
-  private replaceCubieWithSnapshot(cubieIndex: number, snapshot: ForceCubieSnapshot) {
-    const cubie = this.cubies[cubieIndex];
-
-    // Remove old stickers
-    const stickersToRemove: THREE.Mesh[] = [];
-    cubie.mesh.traverse((child) => {
-      if (child instanceof THREE.Mesh && child.userData.isSticker) {
-        stickersToRemove.push(child);
-      }
-    });
-    stickersToRemove.forEach(s => {
-      cubie.mesh.remove(s);
-      s.geometry.dispose();
-      if (s.material instanceof THREE.Material) s.material.dispose();
-    });
-
-    // Reset quaternion to identity (snapshot was taken when cubie was at identity rotation)
-    cubie.mesh.quaternion.set(
-      snapshot.quaternion.x,
-      snapshot.quaternion.y,
-      snapshot.quaternion.z,
-      snapshot.quaternion.w,
-    );
-
-    // Create new stickers from snapshot
-    this.createStickersFromSnapshot(cubie.mesh, snapshot.stickerColors);
-  }
-
-  /**
-   * Create stickers on a cubie group from a snapshot's stored colors.
-   */
-  private createStickersFromSnapshot(group: THREE.Group, stickerColors: Record<string, string>) {
-    const half = CUBIE_SIZE / 2 + STICKER_DEPTH;
-
-    for (const [face, colorHex] of Object.entries(stickerColors)) {
-      let pos: [number, number, number], rot: [number, number, number];
-      switch (face) {
-        case 'R': pos = [half, 0, 0]; rot = [0, Math.PI / 2, 0]; break;
-        case 'L': pos = [-half, 0, 0]; rot = [0, -Math.PI / 2, 0]; break;
-        case 'U': pos = [0, half, 0]; rot = [-Math.PI / 2, 0, 0]; break;
-        case 'D': pos = [0, -half, 0]; rot = [Math.PI / 2, 0, 0]; break;
-        case 'F': pos = [0, 0, half]; rot = [0, 0, 0]; break;
-        case 'B': pos = [0, 0, -half]; rot = [0, Math.PI, 0]; break;
-        default: continue;
-      }
-
-      const geo = createRoundedStickerGeometry(STICKER_SCALE, STICKER_SCALE * STICKER_CORNER_RADIUS);
-      const mat = new THREE.MeshPhongMaterial({
-        color: new THREE.Color(colorHex),
-        shininess: 0,
-        specular: new THREE.Color(0x000000),
-      });
-      const sticker = new THREE.Mesh(geo, mat);
-      sticker.position.set(...pos);
-      sticker.rotation.set(...rot);
-      sticker.userData.isSticker = true;
-      sticker.userData.face = face;
-      const localNormal = new THREE.Vector3(0, 0, 1).applyEuler(new THREE.Euler(...rot));
-      sticker.userData.normal = localNormal;
-      group.add(sticker);
-    }
-  }
-
-  /**
-   * Rebuild internal cubeState by reading current visual sticker colors.
-   */
-  private rebuildCubeStateFromVisuals(): CubeStateData {
-    const newState = createSolvedState();
-
-    const faces: FaceKey[] = ['U', 'D', 'F', 'B', 'L', 'R'];
-    for (const face of faces) {
-      const faceColors: FaceColor[] = [];
-      const targetPositions = this.getFaceCubiePositions(face);
-
-      // Sort positions to match sticker index order (0-8)
-      targetPositions.sort((a, b) => {
-        const idxA = this.getStickerIndexOnFace(new THREE.Vector3(a.x, a.y, a.z), face);
-        const idxB = this.getStickerIndexOnFace(new THREE.Vector3(b.x, b.y, b.z), face);
-        return idxA - idxB;
-      });
-
-      for (const pos of targetPositions) {
-        const cubie = this.cubies.find(c =>
-          c.logicalPos.x === pos.x &&
-          c.logicalPos.y === pos.y &&
-          c.logicalPos.z === pos.z
-        );
-        if (!cubie) { faceColors.push('X'); continue; }
-
+      for (const pos of faceCubiePositions(face)) {
+        const cubie = byPos.get(`${pos.x},${pos.y},${pos.z}`);
+        if (!cubie) continue;
         const sticker = this.getStickerOnFace(cubie, face);
-        if (sticker && sticker.material instanceof THREE.MeshPhongMaterial) {
-          const colorHex = '#' + sticker.material.color.getHexString();
-          let matched: FaceColor = 'X';
-          for (const [key, value] of Object.entries(FACE_COLORS)) {
-            if (value.toLowerCase() === colorHex.toLowerCase()) {
-              matched = key as FaceColor;
-              break;
-            }
-          }
-          faceColors.push(matched);
-        } else {
-          faceColors.push('X');
-        }
-      }
-      newState[face] = faceColors;
-    }
-    this.cubeState = newState;
-    return newState;
-  }
+        if (!sticker) continue;
+        const material = sticker.material;
+        if (!(material instanceof THREE.MeshPhongMaterial)) continue;
 
-  cubieHasFace(cubie: Cubie, face: FaceKey): boolean {
-    const { x, y, z } = cubie.logicalPos;
-    switch (face) {
-      case 'R': return x === 1;
-      case 'L': return x === -1;
-      case 'U': return y === 1;
-      case 'D': return y === -1;
-      case 'F': return z === 1;
-      case 'B': return z === -1;
-      default: return false;
+        // A cubie in motion can swing into view mid-turn, so it never wears the
+        // force layer — that is the second layer showing through underneath.
+        const source = forceColors && !this.movingCubies.has(cubie)
+          ? forceColors
+          : this.cubeState[face];
+
+        const colorKey = source[stickerIndexOnFace(pos.x, pos.y, pos.z, face)];
+        material.color.set(FACE_COLORS[colorKey] ?? FACE_COLORS['X']);
+      }
     }
   }
 
   /**
-   * Find the sticker on a cubie that currently faces the specified face direction.
+   * Find the sticker on a cubie that currently faces the specified face
+   * direction. Cubies keep their own rotation, so this follows the sticker
+   * wherever earlier turns have carried it.
    */
   private getStickerOnFace(cubie: Cubie, face: FaceKey): THREE.Mesh | null {
-    const faceNormals: Record<string, THREE.Vector3> = {
-      'U': new THREE.Vector3(0, 1, 0),
-      'D': new THREE.Vector3(0, -1, 0),
-      'F': new THREE.Vector3(0, 0, 1),
-      'B': new THREE.Vector3(0, 0, -1),
-      'L': new THREE.Vector3(-1, 0, 0),
-      'R': new THREE.Vector3(1, 0, 0),
-    };
-
-    const targetNormal = faceNormals[face];
+    const targetNormal = faceNormalVec(face);
 
     for (const child of cubie.mesh.children) {
       if (!child.userData.isSticker) continue;
@@ -936,12 +744,13 @@ export class RubiksCube {
   }
 
   setState(state: CubeStateData) {
-    this.cubeState = { ...state };
+    this.cubeState = cloneCubeState(state);
     this.isAnimating = false;
     this.activeDrag = null;
     this.activePivot = null;
     this.animQueue = [];
     this.moveHistory = [];
+    this.movingCubies.clear();
     this.buildCube(state);
   }
 
@@ -949,40 +758,14 @@ export class RubiksCube {
   clearHistory() { this.moveHistory = []; }
 
   /**
-   * Take a complete snapshot of all 27 cubies.
+   * Snapshot of the cube in the persisted preset format.
+   *
+   * Built from the real state, never from what is on screen: hidden faces on
+   * screen may already be showing a force layer, which must never leak into a
+   * saved preset.
    */
   takeForceSnapshot(): ForceCubieSnapshot[] {
-    const snapshots: ForceCubieSnapshot[] = [];
-    for (const cubie of this.cubies) {
-      const stickerColors: Record<string, string> = {};
-      for (const child of cubie.mesh.children) {
-        if (child.userData.isSticker && (child as THREE.Mesh).material instanceof THREE.MeshPhongMaterial) {
-          const face = child.userData.face;
-          const colorHex = '#' + ((child as THREE.Mesh).material as THREE.MeshPhongMaterial).color.getHexString();
-          stickerColors[face] = colorHex;
-        }
-      }
-      snapshots.push({
-        logicalPos: {
-          x: Math.round(cubie.logicalPos.x),
-          y: Math.round(cubie.logicalPos.y),
-          z: Math.round(cubie.logicalPos.z),
-        },
-        position: {
-          x: cubie.mesh.position.x,
-          y: cubie.mesh.position.y,
-          z: cubie.mesh.position.z,
-        },
-        quaternion: {
-          x: cubie.mesh.quaternion.x,
-          y: cubie.mesh.quaternion.y,
-          z: cubie.mesh.quaternion.z,
-          w: cubie.mesh.quaternion.w,
-        },
-        stickerColors,
-      });
-    }
-    return snapshots;
+    return cubeStateToSnapshot(this.cubeState);
   }
 
   clearQueue() {

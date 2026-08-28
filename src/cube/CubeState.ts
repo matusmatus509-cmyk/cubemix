@@ -72,20 +72,11 @@ function cloneState(state: CubeStateData): CubeStateData {
 
 // Move implementations
 
-// U face clockwise
+// U face clockwise (seen from above): the top rows travel F → L → B → R → F,
+// the same direction rotateFaceCW turns the U grid itself.
 function moveU(state: CubeStateData): CubeStateData {
   const s = cloneState(state);
   s.U = rotateFaceCW(state.U);
-  [s.R[0], s.R[1], s.R[2]] = [state.F[0], state.F[1], state.F[2]];
-  [s.B[0], s.B[1], s.B[2]] = [state.R[0], state.R[1], state.R[2]];
-  [s.L[0], s.L[1], s.L[2]] = [state.B[0], state.B[1], state.B[2]];
-  [s.F[0], s.F[1], s.F[2]] = [state.L[0], state.L[1], state.L[2]];
-  return s;
-}
-
-function moveUPrime(state: CubeStateData): CubeStateData {
-  const s = cloneState(state);
-  s.U = rotateFaceCCW(state.U);
   [s.L[0], s.L[1], s.L[2]] = [state.F[0], state.F[1], state.F[2]];
   [s.B[0], s.B[1], s.B[2]] = [state.L[0], state.L[1], state.L[2]];
   [s.R[0], s.R[1], s.R[2]] = [state.B[0], state.B[1], state.B[2]];
@@ -93,24 +84,34 @@ function moveUPrime(state: CubeStateData): CubeStateData {
   return s;
 }
 
-// D face clockwise (when looking from bottom)
+function moveUPrime(state: CubeStateData): CubeStateData {
+  const s = cloneState(state);
+  s.U = rotateFaceCCW(state.U);
+  [s.R[0], s.R[1], s.R[2]] = [state.F[0], state.F[1], state.F[2]];
+  [s.B[0], s.B[1], s.B[2]] = [state.R[0], state.R[1], state.R[2]];
+  [s.L[0], s.L[1], s.L[2]] = [state.B[0], state.B[1], state.B[2]];
+  [s.F[0], s.F[1], s.F[2]] = [state.L[0], state.L[1], state.L[2]];
+  return s;
+}
+
+// D face clockwise (seen from below): the bottom rows travel F → R → B → L → F.
 function moveD(state: CubeStateData): CubeStateData {
   const s = cloneState(state);
   s.D = rotateFaceCW(state.D);
-  [s.L[6], s.L[7], s.L[8]] = [state.F[6], state.F[7], state.F[8]];
-  [s.B[6], s.B[7], s.B[8]] = [state.L[6], state.L[7], state.L[8]];
-  [s.R[6], s.R[7], s.R[8]] = [state.B[6], state.B[7], state.B[8]];
-  [s.F[6], s.F[7], s.F[8]] = [state.R[6], state.R[7], state.R[8]];
+  [s.R[6], s.R[7], s.R[8]] = [state.F[6], state.F[7], state.F[8]];
+  [s.B[6], s.B[7], s.B[8]] = [state.R[6], state.R[7], state.R[8]];
+  [s.L[6], s.L[7], s.L[8]] = [state.B[6], state.B[7], state.B[8]];
+  [s.F[6], s.F[7], s.F[8]] = [state.L[6], state.L[7], state.L[8]];
   return s;
 }
 
 function moveDPrime(state: CubeStateData): CubeStateData {
   const s = cloneState(state);
   s.D = rotateFaceCCW(state.D);
-  [s.R[6], s.R[7], s.R[8]] = [state.F[6], state.F[7], state.F[8]];
-  [s.B[6], s.B[7], s.B[8]] = [state.R[6], state.R[7], state.R[8]];
-  [s.L[6], s.L[7], s.L[8]] = [state.B[6], state.B[7], state.B[8]];
-  [s.F[6], s.F[7], s.F[8]] = [state.L[6], state.L[7], state.L[8]];
+  [s.L[6], s.L[7], s.L[8]] = [state.F[6], state.F[7], state.F[8]];
+  [s.B[6], s.B[7], s.B[8]] = [state.L[6], state.L[7], state.L[8]];
+  [s.R[6], s.R[7], s.R[8]] = [state.B[6], state.B[7], state.B[8]];
+  [s.F[6], s.F[7], s.F[8]] = [state.R[6], state.R[7], state.R[8]];
   return s;
 }
 
@@ -218,22 +219,22 @@ function moveMPrime(state: CubeStateData): CubeStateData {
   return s;
 }
 
-// E - equatorial slice (between U and D), same direction as D
+// E - equatorial slice (between U and D), same direction as D: F → R → B → L → F
 function moveE(state: CubeStateData): CubeStateData {
-  const s = cloneState(state);
-  [s.L[3], s.L[4], s.L[5]] = [state.F[3], state.F[4], state.F[5]];
-  [s.B[3], s.B[4], s.B[5]] = [state.L[3], state.L[4], state.L[5]];
-  [s.R[3], s.R[4], s.R[5]] = [state.B[3], state.B[4], state.B[5]];
-  [s.F[3], s.F[4], s.F[5]] = [state.R[3], state.R[4], state.R[5]];
-  return s;
-}
-
-function moveEPrime(state: CubeStateData): CubeStateData {
   const s = cloneState(state);
   [s.R[3], s.R[4], s.R[5]] = [state.F[3], state.F[4], state.F[5]];
   [s.B[3], s.B[4], s.B[5]] = [state.R[3], state.R[4], state.R[5]];
   [s.L[3], s.L[4], s.L[5]] = [state.B[3], state.B[4], state.B[5]];
   [s.F[3], s.F[4], s.F[5]] = [state.L[3], state.L[4], state.L[5]];
+  return s;
+}
+
+function moveEPrime(state: CubeStateData): CubeStateData {
+  const s = cloneState(state);
+  [s.L[3], s.L[4], s.L[5]] = [state.F[3], state.F[4], state.F[5]];
+  [s.B[3], s.B[4], s.B[5]] = [state.L[3], state.L[4], state.L[5]];
+  [s.R[3], s.R[4], s.R[5]] = [state.B[3], state.B[4], state.B[5]];
+  [s.F[3], s.F[4], s.F[5]] = [state.R[3], state.R[4], state.R[5]];
   return s;
 }
 

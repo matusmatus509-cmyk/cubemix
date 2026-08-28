@@ -1,5 +1,12 @@
 import * as THREE from 'three';
-import { RubiksCube, ForceCubieSnapshot } from './RubiksCube';
+import {
+  RubiksCube,
+  ForceCubieSnapshot,
+  TOTAL,
+  faceNormalVec,
+  snapshotToCubeState,
+} from './RubiksCube';
+import { FACE_KEYS } from './CubeLayout';
 import { CubeInteraction } from './CubeInteraction';
 import { CubeStateData, createSolvedState, MoveType, inverseMove, FaceKey } from './CubeState';
 
@@ -14,25 +21,9 @@ export class CubeScene {
   private container: HTMLElement;
   private ro: ResizeObserver | null = null;
 
-  // Force mode
-  private forceSnapshot: ForceCubieSnapshot[] | null = null;
-  private forceModeActive = false;
-  private initialVisibleFaces: Set<FaceKey> = new Set();
-  private forcedFaces: Set<FaceKey> = new Set();
-  private faceNormals: Record<FaceKey, THREE.Vector3> = {
-    U: new THREE.Vector3(0, 1, 0),
-    D: new THREE.Vector3(0, -1, 0),
-    F: new THREE.Vector3(0, 0, 1),
-    B: new THREE.Vector3(0, 0, -1),
-    L: new THREE.Vector3(-1, 0, 0),
-    R: new THREE.Vector3(1, 0, 0),
-  };
-
   onForceActiveChange?: (active: boolean) => void;
   /** Fires for every executed move (drag, button, scramble, solve). */
   onUserMove?: (move: MoveType) => void;
-
-
 
   constructor(container: HTMLElement) {
     this.container = container;
@@ -128,10 +119,8 @@ export class CubeScene {
       // Smoothly interpolate any in-progress drag
       this.cube.tickDragSmoothing();
 
-      // Force mode: check if initially visible faces have become hidden
-      if (this.forceModeActive) {
-        this.checkAndForceNewlyHidden();
-      }
+      // Keep the force layer on whatever the viewer cannot see right now.
+      this.updateForceLayer();
 
       this.renderer.render(this.scene, this.camera);
     };
@@ -160,22 +149,23 @@ export class CubeScene {
   }
 
   reset() {
-    const solved = createSolvedState();
-    this.cube.setState(solved);
-    this.forceModeActive = false;
-    this.initialVisibleFaces.clear();
-    this.forcedFaces.clear();
-    this.onForceActiveChange?.(false);
+    // Orientation first: arming reads which faces are out of sight, so the cube
+    // has to be sitting at its default angle before the force goes on.
+    this.resetRotation();
+    this.cube.setState(createSolvedState());
+    // The loaded force survives a reset (even one that has already been fully
+    // revealed) — the cube is simply armed again from a solved start.
+    const configured = this.cube.force.configuredState();
+    if (configured) this.armForce(configured);
   }
 
   executeMove(move: MoveType) {
     this.cube.executeMove(move);
   }
 
+  /** Back to the default isometric angle (Euler and quaternion stay in sync). */
   resetRotation() {
-    this.cubeGroup.rotation.x = 0.52;
-    this.cubeGroup.rotation.y = 0.75;
-    this.cubeGroup.rotation.z = 0;
+    this.cubeGroup.rotation.set(0.52, 0.75, 0);
   }
 
   getState(): CubeStateData {
@@ -201,126 +191,112 @@ export class CubeScene {
     this.cube.clearHistory();
   }
 
-  // ─── Force Mode ──────────────────────────────────────────────
+  // ─── Force layer ─────────────────────────────────────────────
 
-  /** Clear force snapshot and reset all force state */
-  clearForceSnapshot() {
-    this.forceSnapshot = null;
-    this.forceModeActive = false;
-    this.initialVisibleFaces.clear();
-    this.forcedFaces.clear();
-    this.onForceActiveChange?.(false);
+  /** True when a force is configured (whether or not it is still hidden). */
+  hasForce(): boolean {
+    return this.cube.force.isConfigured();
   }
 
-  /** Capture the current live state as a ForceCubieSnapshot array (for saving to presets) */
+  /** True while the force layer is still riding on the unseen faces. */
+  isForceLive(): boolean {
+    return this.cube.force.isArmed();
+  }
+
+  /** True once at least one face has been revealed wearing the force. */
+  isForceInProgress(): boolean {
+    return this.cube.force.isRevealing();
+  }
+
+  /** Load a force layer from a saved preset. It is live from this moment on. */
+  setForceSnapshotFromData(snapshots: ForceCubieSnapshot[]) {
+    this.armForce(snapshotToCubeState(snapshots));
+  }
+
+  /** Freeze the cube's current real state as the force layer. */
+  setForceSnapshot() {
+    this.armForce(this.cube.getState());
+  }
+
+  /** Current real cube state in the persisted preset format. */
   takeForceSnapshot(): ForceCubieSnapshot[] {
     return this.cube.takeForceSnapshot();
   }
 
-  /** Store complete cube snapshot from current live state */
-  setForceSnapshot() {
-    this.forceSnapshot = this.cube.takeForceSnapshot();
-  }
-
-  /** Set force snapshot directly from previously saved data (does NOT change the cube's visual state) */
-  setForceSnapshotFromData(snapshots: ForceCubieSnapshot[]) {
-    this.forceSnapshot = snapshots;
-  }
-
-  getForceSnapshot(): ForceCubieSnapshot[] | null {
-    return this.forceSnapshot;
-  }
-
-  /** Activate force mode */
-  activateForceMode() {
-    if (this.isForceModeActive() || !this.forceSnapshot) return;
-
-    this.forceModeActive = true;
-    this.forcedFaces.clear();
-
-    // Record which faces are currently visible
-    const currentVis = this.computeFaceVisibility();
-    this.initialVisibleFaces.clear();
-    for (const [face, isVisible] of Object.entries(currentVis)) {
-      if (isVisible) this.initialVisibleFaces.add(face as FaceKey);
-    }
-
-    // Immediately force the currently hidden faces
-    this.applyForceToCurrentlyHiddenFaces();
-
-    this.onForceActiveChange?.(true);
-  }
-
-  /** Deactivate force mode */
-  deactivateForceMode() {
-    this.forceModeActive = false;
+  /** Remove the force layer — the cube goes back to being an ordinary cube. */
+  clearForceSnapshot() {
+    this.cube.force.clear();
+    this.cube.repaintStickers();
     this.onForceActiveChange?.(false);
   }
 
-  isForceModeActive(): boolean { return this.forceModeActive; }
-
-  /** Immediately apply force to faces currently hidden */
-  private applyForceToCurrentlyHiddenFaces() {
-    if (!this.forceSnapshot) return;
-
-    const currentVis = this.computeFaceVisibility();
-    const facesToForce: FaceKey[] = [];
-
-    for (const [face, isVisible] of Object.entries(currentVis)) {
-      if (!isVisible && !this.forcedFaces.has(face as FaceKey)) {
-        facesToForce.push(face as FaceKey);
-      }
-    }
-
-    if (facesToForce.length > 0) {
-      this.cube.applyForceSnapshot(this.forceSnapshot, facesToForce);
-      facesToForce.forEach(f => this.forcedFaces.add(f));
-    }
+  /** Load a force and drop it straight onto every face that is out of sight. */
+  private armForce(state: CubeStateData) {
+    this.cube.force.arm(state, this.computeFaceDots());
+    this.cube.repaintStickers();
+    this.onForceActiveChange?.(true);
   }
 
-  private computeFaceVisibility(): Record<FaceKey, boolean> {
+  /**
+   * How each face is turned relative to the viewer.
+   *
+   * Negative = the face points at the camera (visible), positive = it is turned
+   * away (hidden). A cube face is flat, so the sign measured at its centre holds
+   * for every point on it — this test is exact, not an approximation.
+   */
+  private computeFaceDots(): Record<FaceKey, number> {
     this.camera.updateMatrixWorld(true);
     this.cubeGroup.updateMatrixWorld(true);
 
-    const camForward = new THREE.Vector3(0, 0, -1).transformDirection(this.camera.matrixWorld).normalize();
+    const camPos = new THREE.Vector3().setFromMatrixPosition(this.camera.matrixWorld);
+    const dots = {} as Record<FaceKey, number>;
 
-    const result: Record<FaceKey, boolean> = {} as any;
-
-    for (const [face, localNormal] of Object.entries(this.faceNormals)) {
-      const worldNormal = localNormal.clone().transformDirection(this.cubeGroup.matrixWorld).normalize();
-      result[face as FaceKey] = worldNormal.dot(camForward) < 0;
+    for (const face of FACE_KEYS) {
+      const normal = faceNormalVec(face)
+        .transformDirection(this.cubeGroup.matrixWorld)
+        .normalize();
+      const center = faceNormalVec(face)
+        .multiplyScalar(1.5 * TOTAL)
+        .applyMatrix4(this.cubeGroup.matrixWorld);
+      dots[face] = normal.dot(center.sub(camPos).normalize());
     }
 
-    return result;
+    return dots;
   }
 
-  /** Called each frame while force mode is active (Phase 1 running) */
-  private checkAndForceNewlyHidden() {
-    if (!this.forceSnapshot || !this.forceModeActive) return;
+  /**
+   * Runs every frame. Two things happen here, both driven purely by how the
+   * cube is turned:
+   *
+   *  - a face that turns out of sight gets the force layer put on it, unseen;
+   *  - a forced face that turns back into view has its colours committed as the
+   *    real ones. Nothing changes on screen at that instant (the face already
+   *    shows them), but from then on that face is an honest part of the cube and
+   *    is never forced again.
+   *
+   * Once all six faces have been through this the cube genuinely *is* the force
+   * state and the layer retires itself.
+   */
+  private updateForceLayer() {
+    // Mid-turn the moving layer is deliberately showing real colours; leave
+    // everything alone until it has settled.
+    if (!this.cube.force.isArmed() || this.cube.isBusy()) return;
 
-    const currentVis = this.computeFaceVisibility();
-    const newlyHidden: FaceKey[] = [];
+    const update = this.cube.force.evaluate(this.computeFaceDots());
 
-    // Each initially-visible face that has rotated away from camera gets forced
-    // while it is hidden so the swap is never seen by the user.
-    for (const face of this.initialVisibleFaces) {
-      if (!currentVis[face] && !this.forcedFaces.has(face)) {
-        newlyHidden.push(face);
-      }
+    // Committed faces must be written into the real state before repainting,
+    // otherwise the repaint would put the real (old) colours back on screen.
+    for (const face of update.commit) this.cube.commitForceFace(face);
+
+    if (update.commit.length > 0 || update.hidden.length > 0) {
+      this.cube.repaintStickers();
     }
 
-    if (newlyHidden.length > 0) {
-      for (const face of newlyHidden) {
-        this.cube.applyForceSnapshot(this.forceSnapshot, [face]);
-        this.forcedFaces.add(face);
-      }
-    }
-
-    // Safety: if all 6 faces are forced, clean up
-    if (this.forcedFaces.size >= 6) {
-      this.forceModeActive = false;
-      this.initialVisibleFaces.clear();
-      this.forcedFaces.clear();
+    if (update.finished) {
+      this.cube.force.retire();
+      // The cube is now the force state, which the recorded history no longer
+      // describes — replaying it backwards would not solve anything.
+      this.cube.clearHistory();
       this.onForceActiveChange?.(false);
     }
   }
@@ -328,46 +304,6 @@ export class CubeScene {
   private handleMoveExecuted(move: MoveType) {
     // Notify listeners of every executed move (used for the move counter).
     this.onUserMove?.(move);
-
-    if (!this.forceModeActive || !this.forceSnapshot) return;
-
-    // After every move, check if all remaining unforced faces are currently
-    // visible. If so, they will never rotate away unseen — trigger Phase 2
-    // automatically to force them visibly (the user sees the change happen).
-    const unforcedFaces = (['U', 'D', 'F', 'B', 'L', 'R'] as FaceKey[]).filter(
-      f => !this.forcedFaces.has(f)
-    );
-
-    if (unforcedFaces.length === 0) return;
-
-    const currentVis = this.computeFaceVisibility();
-    const allUnforcedAreVisible = unforcedFaces.every(f => currentVis[f]);
-
-    if (allUnforcedAreVisible) {
-      // All remaining faces are visible — Phase 1 can't do anything more.
-      // Automatically trigger Phase 2 (force remaining visible faces directly).
-      setTimeout(() => this.executePhase2(), 80);
-    }
-  }
-
-  private executePhase2() {
-    if (!this.forceSnapshot) return;
-
-    // Force all faces that still haven't been forced yet (the ones that were
-    // visible when force activated and haven't rotated away during Phase 1).
-    const allFaces: FaceKey[] = ['U', 'D', 'F', 'B', 'L', 'R'];
-    for (const face of allFaces) {
-      if (!this.forcedFaces.has(face)) {
-        this.cube.applyForceSnapshot(this.forceSnapshot, [face]);
-        this.forcedFaces.add(face);
-      }
-    }
-
-    // Force complete — deactivate and reset all flags
-    this.forceModeActive = false;
-    this.initialVisibleFaces.clear();
-    this.forcedFaces.clear();
-    this.onForceActiveChange?.(false);
   }
 
   destroy() {
