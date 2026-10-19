@@ -7,8 +7,9 @@ import {
   snapshotToCubeState,
 } from './RubiksCube';
 import { FACE_KEYS } from './CubeLayout';
+import { FaceDots } from './HiddenForce';
 import { CubeInteraction } from './CubeInteraction';
-import { CubeStateData, createSolvedState, MoveType, inverseMove, FaceKey } from './CubeState';
+import { CubeStateData, createSolvedState, MoveType } from './CubeState';
 
 export class CubeScene {
   private scene: THREE.Scene;
@@ -20,6 +21,14 @@ export class CubeScene {
   private animFrameId: number = 0;
   private container: HTMLElement;
   private ro: ResizeObserver | null = null;
+  private destroyed = false;
+  private forceTick = 0;
+  private operation = 0;
+  private running = false;
+  private worker: Worker | null = null;
+  private cancelWait: (() => void) | null = null;
+  onBusyChange?: (busy: boolean) => void;
+  onError?: (message: string) => void;
 
   onForceActiveChange?: (active: boolean) => void;
   /** Fires for every executed move (drag, button, scramble, solve). */
@@ -85,7 +94,7 @@ export class CubeScene {
 
     // Sync camera + renderer to the CSS-computed canvas size right away
     // (deferred one frame so the browser has finished layout)
-    requestAnimationFrame(() => this.onResize());
+    requestAnimationFrame(() => { if (!this.destroyed) this.onResize(); });
 
     // Start render loop
     this.startRenderLoop();
@@ -116,12 +125,7 @@ export class CubeScene {
     const animate = () => {
       this.animFrameId = requestAnimationFrame(animate);
 
-      // Smoothly interpolate any in-progress drag
-      this.cube.tickDragSmoothing();
-
-      // Keep the force layer on whatever the viewer cannot see right now.
       this.updateForceLayer();
-
       this.renderer.render(this.scene, this.camera);
     };
     animate();
@@ -138,6 +142,7 @@ export class CubeScene {
     const bw = Math.round(w * dpr);
     const bh = Math.round(h * dpr);
     if (this.renderer.domElement.width !== bw || this.renderer.domElement.height !== bh) {
+      this.renderer.setPixelRatio(dpr);
       this.renderer.setSize(w, h, false);
     }
     this.camera.aspect = w / h;
@@ -149,8 +154,9 @@ export class CubeScene {
   }
 
   reset() {
-    // Orientation first: arming reads which faces are out of sight, so the cube
-    // has to be sitting at its default angle before the force goes on.
+    this.cancelOperation();
+    this.interaction.cancel();
+    // Cancel every pending animation before restoring the solved orientation.
     this.resetRotation();
     this.cube.setState(createSolvedState());
     // The loaded force survives a reset (even one that has already been fully
@@ -172,23 +178,82 @@ export class CubeScene {
     return this.cube.getState();
   }
 
-  /** Get the sequence of inverse moves that will solve the cube */
-  getSolveSequence(): MoveType[] {
-    const history = this.cube.getMoveHistory();
-    const solution: MoveType[] = [];
-    for (let i = history.length - 1; i >= 0; i--) {
-      solution.push(inverseMove(history[i]));
+  isBusy() { return this.running || this.cube.isBusy(); }
+
+  private setRunning(value: boolean) {
+    this.running = value;
+    this.interaction.setEnabled(!value);
+    this.onBusyChange?.(value);
+  }
+
+  private cancelOperation() {
+    this.operation++;
+    this.worker?.terminate();
+    this.worker = null;
+    this.cancelWait?.();
+    this.cancelWait = null;
+    this.setRunning(false);
+  }
+
+  private plan(target: CubeStateData): Promise<MoveType[]> {
+    return new Promise((resolve, reject) => {
+      const worker = new Worker(new URL('./solver.worker.ts', import.meta.url), {type: 'module'});
+      this.worker = worker;
+      this.cancelWait = () => resolve([]);
+      const finish = () => { worker.terminate(); this.worker = null; this.cancelWait = null; };
+      worker.onmessage = ({data}) => {
+        if (this.worker !== worker) return;
+        finish();
+        if (data.error) reject(new Error(data.error)); else resolve(data.moves);
+      };
+      worker.onerror = () => { if (this.worker !== worker) return; finish(); reject(new Error('Riešič kocky sa nepodarilo spustiť.')); };
+      worker.postMessage({from: this.cube.getState(), to: target});
+    });
+  }
+
+  private async play(moves: MoveType[], token: number) {
+    for (const move of moves) {
+      if (token !== this.operation || this.destroyed) return;
+      await new Promise<void>(resolve => {
+        this.cancelWait = resolve;
+        this.cube.executeMove(move, () => { this.cancelWait = null; resolve(); });
+      });
     }
-    return solution;
   }
 
-  /** Execute a move without recording it in the history */
-  executeSolveMove(move: MoveType) {
-    this.cube.executeMove(move, undefined, true);
+  async runMoves(moves: MoveType[]) {
+    if (this.isBusy()) return;
+    const token = ++this.operation;
+    this.setRunning(true);
+    try {
+      await this.play(moves, token);
+    } finally {
+      if (token === this.operation) this.setRunning(false);
+    }
+    if (token === this.operation) for (let i = 0; i < moves.length; i++) this.cube.force.noteTurn();
   }
 
-  clearHistory() {
-    this.cube.clearHistory();
+  async solve() {
+    if (this.isBusy()) return;
+    await this.transition(createSolvedState());
+  }
+
+  private async transition(target: CubeStateData) {
+    const token = ++this.operation;
+    this.setRunning(true);
+    try {
+      const moves = await this.plan(target);
+      if (token !== this.operation || this.destroyed) return;
+      await this.play(moves, token);
+      if (token !== this.operation) return;
+      // Explicit Solve must stay solved; mixing can re-arm the retained preset.
+      this.cube.force.retire();
+      this.onForceActiveChange?.(false);
+    } catch (error) {
+      if (token === this.operation) this.onError?.(error instanceof Error ? error.message : 'Operácia zlyhala.');
+    } finally {
+      if (token === this.operation) this.setRunning(false);
+    }
   }
 
   // ─── Force layer ─────────────────────────────────────────────
@@ -198,29 +263,36 @@ export class CubeScene {
     return this.cube.force.isConfigured();
   }
 
-  /** True while the force layer is still riding on the unseen faces. */
+  /** True while hidden legal completions are active. */
   isForceLive(): boolean {
     return this.cube.force.isArmed();
   }
 
-  /** True once at least one face has been revealed wearing the force. */
+  /** True while an operation is running. */
   isForceInProgress(): boolean {
-    return this.cube.force.isRevealing();
+    return this.running && this.cube.force.isReady();
   }
 
-  /** True while the cube may not be turned around — not mixed enough yet. */
+  /** Orbit is unrestricted: force never relies on hiding an illegal state. */
   isRotationLocked(): boolean {
     return this.cube.force.isRotationLocked();
   }
 
   /** Load a force layer from a saved preset. It is live from this moment on. */
-  setForceSnapshotFromData(snapshots: ForceCubieSnapshot[]) {
-    this.armForce(snapshotToCubeState(snapshots));
+  setForceSnapshotFromData(snapshots: ForceCubieSnapshot[]): boolean {
+    try {
+      if (this.isBusy()) throw new Error('Počkaj na dokončenie ťahu.');
+      this.armForce(snapshotToCubeState(snapshots));
+      return true;
+    } catch (error) {
+      this.onError?.(error instanceof Error ? error.message : 'Neplatný preset.');
+      return false;
+    }
   }
 
   /** Freeze the cube's current real state as the force layer. */
   setForceSnapshot() {
-    this.armForce(this.cube.getState());
+    if (!this.isBusy()) this.armForce(this.cube.getState());
   }
 
   /** Current real cube state in the persisted preset format. */
@@ -235,93 +307,51 @@ export class CubeScene {
     this.onForceActiveChange?.(false);
   }
 
-  /** Load a force and drop it straight onto every face that is out of sight. */
+  /** Configure a target without changing any stickers. */
   private armForce(state: CubeStateData) {
-    this.cube.force.arm(state, this.computeFaceDots());
+    this.cube.force.arm(state);
     this.cube.repaintStickers();
     this.onForceActiveChange?.(true);
   }
 
-  /**
-   * How each face is turned relative to the viewer.
-   *
-   * Negative = the face points at the camera (visible), positive = it is turned
-   * away (hidden). A cube face is flat, so the sign measured at its centre holds
-   * for every point on it — this test is exact, not an approximation.
-   */
-  private computeFaceDots(): Record<FaceKey, number> {
+  private computeFaceDots(): FaceDots {
     this.camera.updateMatrixWorld(true);
     this.cubeGroup.updateMatrixWorld(true);
-
-    const camPos = new THREE.Vector3().setFromMatrixPosition(this.camera.matrixWorld);
-    const dots = {} as Record<FaceKey, number>;
-
+    const camera = new THREE.Vector3().setFromMatrixPosition(this.camera.matrixWorld);
+    const dots = {} as FaceDots;
     for (const face of FACE_KEYS) {
-      const normal = faceNormalVec(face)
-        .transformDirection(this.cubeGroup.matrixWorld)
-        .normalize();
-      const center = faceNormalVec(face)
-        .multiplyScalar(1.5 * TOTAL)
-        .applyMatrix4(this.cubeGroup.matrixWorld);
-      dots[face] = normal.dot(center.sub(camPos).normalize());
+      const normal = faceNormalVec(face).transformDirection(this.cubeGroup.matrixWorld).normalize();
+      const center = faceNormalVec(face).multiplyScalar(1.5 * TOTAL).applyMatrix4(this.cubeGroup.matrixWorld);
+      dots[face] = normal.dot(center.sub(camera).normalize());
     }
-
     return dots;
   }
 
-  /**
-   * Runs every frame. Two things happen here, both driven purely by how the
-   * cube is turned:
-   *
-   *  - a face that turns out of sight gets the force layer put on it, unseen;
-   *  - a forced face that turns back into view has its colours committed as the
-   *    real ones. Nothing changes on screen at that instant (the face already
-   *    shows them), but from then on that face is an honest part of the cube and
-   *    is never forced again.
-   *
-   * Once all six faces have been through this the cube genuinely *is* the force
-   * state and the layer retires itself.
-   */
   private updateForceLayer() {
-    // Mid-turn the moving layer is deliberately showing real colours; leave
-    // everything alone until it has settled.
-    if (!this.cube.force.isArmed() || this.cube.isBusy()) return;
-
-    const update = this.cube.force.evaluate(this.computeFaceDots());
-
-    // Committed faces must be written into the real state before repainting,
-    // otherwise the repaint would put the real (old) colours back on screen.
-    for (const face of update.commit) this.cube.commitForceFace(face);
-
-    if (update.commit.length > 0 || update.hidden.length > 0) {
-      this.cube.repaintStickers();
-    }
-
-    if (update.finished) {
-      this.cube.force.retire();
-      // The cube is now the force state, which the recorded history no longer
-      // describes — replaying it backwards would not solve anything.
-      this.cube.clearHistory();
-      this.onForceActiveChange?.(false);
+    if (this.isBusy() || !this.cube.force.isReady() || performance.now() - this.forceTick < 80) return;
+    this.forceTick = performance.now();
+    try {
+      const wasArmed = this.cube.force.isArmed();
+      const state = this.cube.force.evaluate(this.cube.getState(), this.computeFaceDots());
+      if (state) this.cube.commitHiddenState(state);
+      if (wasArmed && !this.cube.force.isArmed()) this.onForceActiveChange?.(false);
+    } catch (error) {
+      this.cube.force.clear();
+      this.onError?.(error instanceof Error ? error.message : 'Force sa nepodarilo vyhodnotiť.');
     }
   }
 
   private handleMoveExecuted(move: MoveType) {
-    // Notify listeners of every executed move (used for the move counter).
     this.onUserMove?.(move);
-
-    // A force that has already been delivered goes back on as soon as the cube
-    // is mixed away from it, so the same force can be performed again and again.
-    // Re-arm before counting, so this turn already counts toward the lock.
-    if (this.cube.force.needsRearm()) {
-      const configured = this.cube.force.configuredState();
-      if (configured) this.armForce(configured);
-    }
-
+    // Solver moves never re-arm a force or count as spectator mixing.
+    if (this.running) return;
     this.cube.force.noteTurn();
   }
 
   destroy() {
+    this.destroyed = true;
+    this.cancelOperation();
+    this.cube.destroy();
     cancelAnimationFrame(this.animFrameId);
     this.interaction.destroy();
     this.ro?.disconnect();

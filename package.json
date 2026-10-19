@@ -7,11 +7,14 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "verify": "bun scripts/verify-move-consistency.ts && bun scripts/verify-force-layer.ts",
-    "deploy": "vite build && gh-pages -d dist"
+    "verify": "bun scripts/verify-move-consistency.ts && bun scripts/verify-cube-validity.ts && bun scripts/verify-force-layer.ts && bun scripts/verify-animation.ts",
+    "deploy": "vite build && gh-pages -d dist",
+    "typecheck": "tsc --noEmit",
+    "verify:browser": "node scripts/verify-browser.mjs"
   },
   "dependencies": {
     "@types/three": "^0.185.0",
+    "cubejs": "1.3.2",
     "react": "19.2.6",
     "react-dom": "19.2.6",
     "three": "^0.185.1"
@@ -23,6 +26,7 @@
     "@types/react-dom": "19.2.3",
     "@vitejs/plugin-react": "5.1.1",
     "gh-pages": "^6.3.0",
+    "playwright": "1.56.1",
     "tailwindcss": "4.1.17",
     "typescript": "5.9.3",
     "vite": "7.3.2",

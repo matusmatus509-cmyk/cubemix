@@ -52,6 +52,7 @@ export class CubeInteraction {
   private renderer: THREE.WebGLRenderer;
   private cubeGroup: THREE.Group;
   private ptr: PointerState;
+  private enabled = true;
 
   private readonly MIN_DRAG_PX = 8;
   private readonly ORBIT_SENSITIVITY = 0.008;
@@ -82,7 +83,7 @@ export class CubeInteraction {
   }
 
   private pos(e: MouseEvent | TouchEvent): { x: number; y: number } {
-    if (e instanceof TouchEvent) {
+    if ('touches' in e) {
       const t = e.touches[0] ?? e.changedTouches[0];
       return { x: t.clientX, y: t.clientY };
     }
@@ -98,6 +99,8 @@ export class CubeInteraction {
   }
 
   private raycast(x: number, y: number): THREE.Intersection | null {
+    this.cubeGroup.updateMatrixWorld(true);
+    this.camera.updateMatrixWorld(true);
     this.raycaster.setFromCamera(this.ndc(x, y), this.camera);
     const meshes: THREE.Object3D[] = [];
     this.cubeGroup.traverse(o => { if (o instanceof THREE.Mesh) meshes.push(o); });
@@ -231,7 +234,7 @@ export class CubeInteraction {
   private onPointerDown = (e: MouseEvent | TouchEvent) => {
     // Block new input while a drag, snap-settle, or programmatic animation
     // is still in progress — prevents a second turn from starting mid-snap.
-    if (this.cube.isBusy()) return;
+    if (!this.enabled || this.ptr.down || this.cube.isBusy()) return;
     e.preventDefault();
 
     const p = this.pos(e);
@@ -278,7 +281,7 @@ export class CubeInteraction {
   };
 
   private onPointerMove = (e: MouseEvent | TouchEvent) => {
-    if (!this.ptr.down) return;
+    if (!this.enabled || !this.ptr.down) return;
     e.preventDefault();
 
     const p = this.pos(e);
@@ -390,22 +393,37 @@ export class CubeInteraction {
     el.style.touchAction = 'none';
     el.style.userSelect = 'none';
     el.addEventListener('mousedown', this.onPointerDown, { passive: false });
-    el.addEventListener('mousemove', this.onPointerMove, { passive: false });
+    window.addEventListener('mousemove', this.onPointerMove, { passive: false });
     window.addEventListener('mouseup', this.onPointerUp);
     el.addEventListener('touchstart', this.onPointerDown, { passive: false });
     el.addEventListener('touchmove', this.onPointerMove, { passive: false });
     window.addEventListener('touchend', this.onPointerUp);
-    window.addEventListener('touchcancel', this.onPointerUp);
+    window.addEventListener('touchcancel', this.onCancel);
+    window.addEventListener('blur', this.onCancel);
+  }
+
+  private onCancel = () => this.cancel();
+
+  cancel() {
+    this.cube.cancelDrag();
+    this.ptr = this.fresh();
+  }
+
+  setEnabled(enabled: boolean) {
+    this.enabled = enabled;
+    if (!enabled) this.cancel();
   }
 
   destroy() {
+    this.cancel();
     const el = this.renderer.domElement;
     el.removeEventListener('mousedown', this.onPointerDown);
-    el.removeEventListener('mousemove', this.onPointerMove);
+    window.removeEventListener('mousemove', this.onPointerMove);
     window.removeEventListener('mouseup', this.onPointerUp);
     el.removeEventListener('touchstart', this.onPointerDown);
     el.removeEventListener('touchmove', this.onPointerMove);
     window.removeEventListener('touchend', this.onPointerUp);
-    window.removeEventListener('touchcancel', this.onPointerUp);
+    window.removeEventListener('touchcancel', this.onCancel);
+    window.removeEventListener('blur', this.onCancel);
   }
 }
