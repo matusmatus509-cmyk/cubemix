@@ -166,6 +166,8 @@ export class RubiksCube {
   private animQueue: Array<() => void> = [];
   private onStateChangeCb?: (state: CubeStateData) => void;
   private onMoveCb?: (move: MoveType) => void;
+  private onMotionStartCb?: () => void;
+  private realLayerInMotion = false;
   private cubeState: CubeStateData;
   private activeDrag: DragSession | null = null;
   private activePivot: THREE.Group | null = null;
@@ -192,6 +194,21 @@ export class RubiksCube {
 
   setOnMove(fn: (move: MoveType) => void) {
     this.onMoveCb = fn;
+  }
+
+  setOnMotionStart(fn: () => void) { this.onMotionStartCb = fn; }
+
+  private beginMotion() {
+    this.onMotionStartCb?.();
+    // Strip the overlay from every cubie before any mesh moves. Even stickers
+    // swinging in from the back must belong to one legal physical state.
+    this.realLayerInMotion = true;
+    this.repaintStickers();
+  }
+
+  private finishMotion() {
+    this.realLayerInMotion = false;
+    this.repaintStickers();
   }
 
   getState() { return cloneCubeState(this.cubeState); }
@@ -284,6 +301,7 @@ export class RubiksCube {
     if (this.isBusy()) return null;
     const cubies = this.getCubiesInLayer(axis, layer);
     if (cubies.length === 0) return null;
+    this.beginMotion();
 
     const pivot = new THREE.Group();
     this.cubeGroup.add(pivot);
@@ -305,11 +323,8 @@ export class RubiksCube {
       currentAngle: 0,
     };
 
-
-
     return this.activeDrag;
   }
-
 
   /**
    * Called every animation frame while dragging.
@@ -491,8 +506,7 @@ export class RubiksCube {
 
     // Layer is fully reparented and snapped — safe to accept new input again.
     this.isSettling = false;
-
-
+    this.finishMotion();
 
     this.onStateChangeCb?.(this.getState());
     if (move) {
@@ -612,8 +626,7 @@ export class RubiksCube {
       const angle = (Math.PI / 2) * dir;
       const cubies = this.getCubiesInLayer(axis, layer);
       const q = new THREE.Quaternion().setFromAxisAngle(axisVec, angle);
-
-
+      this.beginMotion();
 
       for (const cubie of cubies) {
         cubie.logicalPos.applyQuaternion(q);
@@ -630,6 +643,7 @@ export class RubiksCube {
       this.isAnimating = true;
       this.animateLayer(cubies, axisVec, angle, ANIM_DURATION, () => {
         this.isAnimating = false;
+        this.finishMotion();
         this.onStateChangeCb?.(this.getState());
         this.onMoveCb?.(move);
         callback?.();
@@ -647,8 +661,8 @@ export class RubiksCube {
     }
   }
 
-  /** Whole-state force commit after visibility and cubie constraints were checked. */
-  commitHiddenState(state: CubeStateData) {
+  /** Commit an already displayed complete legal force as the next real baseline. */
+  commitForceBaseline(state: CubeStateData) {
     if (this.isBusy()) return;
     assertCubeState(state);
     this.cubeState = cloneCubeState(state);
@@ -657,7 +671,7 @@ export class RubiksCube {
     this.onStateChangeCb?.(this.getState());
   }
 
-  /** Paint from one complete, validated cube state. */
+  /** Two independent layers: real cubie colours for motion, face-pinned force for orbit. */
   repaintStickers() {
     for (const cubie of this.cubies) {
       const {x,y,z} = cubie.logicalPos;
@@ -665,7 +679,10 @@ export class RubiksCube {
         if (!cubieOnFace(x,y,z,face)) continue;
         const sticker = this.getStickerOnFace(cubie, face);
         if (sticker?.material instanceof THREE.MeshPhongMaterial) {
-          sticker.material.color.set(FACE_COLORS[this.cubeState[face][stickerIndexOnFace(x,y,z,face)]]);
+          const overlay = !this.realLayerInMotion && this.force.modeOf(face) === 'force'
+            ? this.force.targetColors(face) : null;
+          const colors = overlay ?? this.cubeState[face];
+          sticker.material.color.set(FACE_COLORS[colors[stickerIndexOnFace(x,y,z,face)]]);
         }
       }
     }
@@ -702,6 +719,7 @@ export class RubiksCube {
     this.animQueue = [];
     this.moveHistory = [];
     this.isSettling = false;
+    this.realLayerInMotion = false;
     this.buildCube(state);
     this.onStateChangeCb?.(this.getState());
   }

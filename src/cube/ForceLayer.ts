@@ -1,42 +1,66 @@
-import { CubeStateData } from './CubeState';
+import { CubeStateData, FaceColor, FaceKey } from './CubeState';
 import { cloneCubeState, FACE_KEYS } from './CubeLayout';
 import { assertCubeState } from './CubeValidity';
-import { completeHiddenState, FaceDots, isFaceHidden } from './HiddenForce';
-import { centerKey, orientCenters } from './CubeOrientation';
 
-export const MIN_TURNS_BEFORE_ROTATION = 5;
+export type FaceDots = Record<FaceKey, number>;
+export type FaceRenderMode = 'real' | 'force';
+// Protect faces close to edge-on from an observable colour change.
+export const isFaceHidden = (dot: number) => dot > 0.04;
+export interface ForceUpdate {
+  repaint: boolean;
+  baseline: CubeStateData | null;
+}
 
-/** Only complete legal cube states are committed; visible stickers are fixed. */
+/** Display overlay only. The owner keeps a separate, complete legal real state. */
 export class ForceLayer {
   private configured: CubeStateData | null = null;
-  private armed = false;
-  private turns = 0;
-  private lastInput = '';
-  arm(state: CubeStateData) {
+  private target: CubeStateData | null = null;
+  private revealing = false;
+  private modes: Record<FaceKey, FaceRenderMode> = {U:'real',D:'real',F:'real',B:'real',L:'real',R:'real'};
+
+  arm(state: CubeStateData, dots: FaceDots) {
     assertCubeState(state);
     this.configured = cloneCubeState(state);
-    this.armed = true; this.turns = 0; this.lastInput = '';
+    this.prepareMix(dots);
   }
-  clear() { this.configured = null; this.armed = false; this.turns = 0; this.lastInput = ''; }
+
+  /** Each new mixing cycle starts with real visible faces and a force underneath. */
+  prepareMix(dots: FaceDots) {
+    if (!this.configured) return;
+    this.target = cloneCubeState(this.configured);
+    this.revealing = false;
+    for (const f of FACE_KEYS) this.modes[f] = isFaceHidden(dots[f]) ? 'force' : 'real';
+  }
+
+  clear() { this.configured = null; this.retire(); }
   configuredState() { return this.configured ? cloneCubeState(this.configured) : null; }
   isConfigured() { return this.configured !== null; }
-  isArmed() { return this.armed; }
+  isArmed() { return this.target !== null; }
+  isRevealing() { return this.target !== null && this.revealing; }
   isRotationLocked() { return false; }
-  noteTurn() {
-    if (!this.configured) return;
-    if (!this.armed) { this.armed = true; this.turns = 0; }
-    this.turns++; this.lastInput = '';
+  modeOf(face: FaceKey): FaceRenderMode { return this.target ? this.modes[face] : 'real'; }
+  targetColors(face: FaceKey): FaceColor[] | null { return this.target ? [...this.target[face]] : null; }
+
+  /** Newly hidden faces acquire force. Never copy individual faces into reality. */
+  evaluate(dots: FaceDots): ForceUpdate {
+    if (!this.target) return {repaint:false, baseline:null};
+    let repaint = false;
+    if (FACE_KEYS.some(f => this.modes[f] === 'force' && dots[f] < -0.04)) this.revealing = true;
+    for (const f of FACE_KEYS) {
+      if (this.modes[f] === 'real' && isFaceHidden(dots[f])) {
+        this.modes[f] = 'force';
+        repaint = true;
+      }
+    }
+    // Once every formerly real face has passed out of sight, all six displayed
+    // faces already equal target. Replacing the whole real baseline is invisible.
+    const baseline = FACE_KEYS.every(f => this.modes[f] === 'force') ? cloneCubeState(this.target) : null;
+    return {repaint, baseline};
   }
-  isReady() { return this.armed && this.turns >= MIN_TURNS_BEFORE_ROTATION; }
-  retire() { this.armed = false; }
-  evaluate(state: CubeStateData, dots: FaceDots): CubeStateData | null {
-    if (!this.isReady() || !this.configured) return null;
-    const signature = FACE_KEYS.map(f => `${isFaceHidden(dots[f]) ? 1 : 0}${state[f].join('')}`).join('');
-    if (signature === this.lastInput) return null;
-    const next = completeHiddenState(state, this.configured, dots);
-    this.lastInput = FACE_KEYS.map(f => `${isFaceHidden(dots[f]) ? 1 : 0}${next[f].join('')}`).join('');
-    const target = orientCenters(this.configured, centerKey(state)).state;
-    if (FACE_KEYS.every(f => next[f].every((c,i) => c === target[f][i]))) this.retire();
-    return FACE_KEYS.some(f => next[f].some((c,i) => c !== state[f][i])) ? next : null;
+
+  retire() {
+    this.target = null;
+    this.revealing = false;
+    for (const f of FACE_KEYS) this.modes[f] = 'real';
   }
 }

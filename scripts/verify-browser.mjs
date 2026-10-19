@@ -40,32 +40,45 @@ try {
    const {CubeScene} = await import('/src/cube/CubeScene.ts');
    const {createSolvedState} = await import('/src/cube/CubeState.ts');
    const {cubeStateToSnapshot} = await import('/src/cube/RubiksCube.ts');
-   const {EDGES,assertCubeState} = await import('/src/cube/CubeValidity.ts');
-   const {isFaceHidden} = await import('/src/cube/HiddenForce.ts');
+   const {assertCubeState} = await import('/src/cube/CubeValidity.ts');
+   const {applyMove} = await import('/src/cube/CubeState.ts');
+   const THREE = await import('/node_modules/.vite/deps/three.js');
    const container = document.createElement('div'); container.style.cssText='width:390px;height:650px'; document.body.append(container);
    const scene = new CubeScene(container);
    const equal=(a,b)=>JSON.stringify(a)===JSON.stringify(b);
    const check=(condition,msg)=>{if(!condition)throw Error(msg)};
    const pause=ms=>new Promise(r=>setTimeout(r,ms));
-   const dots=scene.computeFaceDots();
-   const target=createSolvedState();
-   const hiddenEdges=EDGES.filter(slots=>slots.every(([f])=>isFaceHidden(dots[f])));
-   check(hiddenEdges.length>=2,'need two hidden edges');
-   for(const [[a,i],[b,j]] of hiddenEdges.slice(0,2)) [target[a][i],target[b][j]]=[target[b][j],target[a][i]];
-   assertCubeState(target);
-   check(scene.setForceSnapshotFromData(cubeStateToSnapshot(target)),'arm legal preset');
+   let target=createSolvedState();
+   for(const move of ['R','U','M','E','S','B']) target=applyMove(target,move);
+   check(scene.setForceSnapshotFromData(cubeStateToSnapshot(target)),'arm arbitrary legal preset');
    let commits=0;
-   const original=scene.cube.commitHiddenState.bind(scene.cube);
-   scene.cube.commitHiddenState=(next)=>{
-     const old=scene.getState(); const facing=scene.computeFaceDots();
-     for(const f of Object.keys(facing)) if(!isFaceHidden(facing[f]))check(equal(old[f],next[f]),'visible force mutation '+f);
-     assertCubeState(next); commits++; original(next);
+   const original=scene.cube.commitForceBaseline.bind(scene.cube);
+   scene.cube.commitForceBaseline=(next)=>{
+     assertCubeState(next);
+     check(equal(next,target),'commit must adopt the full exact preset');
+     commits++; original(next);
    };
-   await scene.runMoves(['R',"R'",'U',"U'",'F',"F'"]);
-   await pause(500);
-   check(equal(scene.getState(),target),'force exact target');
-   check(!scene.isForceLive(),'force retired');
-   check(commits>0,'force changed hidden state');
+   for(let cycle=0;cycle<4;cycle++) {
+     const baseline=scene.getState();
+     const moves=['R','U',"F'",'M','E'];
+     let expected=baseline;
+     for(const move of moves) expected=applyMove(expected,move);
+     await scene.runMoves(moves);
+     await pause(150);
+     check(equal(scene.getState(),expected),'mixing must act only on the legal real state');
+     check(scene.isForceLive(),'mixing re-arms force');
+     const initialDots=scene.computeFaceDots();
+     for(const [f,d] of Object.entries(initialDots)) {
+       if(d<0)check(scene.cube.force.modeOf(f)==='real','visible faces show real layer while mixing');
+       if(d>.04)check(scene.cube.force.modeOf(f)==='force','all hidden faces carry force');
+     }
+     // Turn the whole cube to the opposite corner. No layer moves are executed.
+     scene.cubeGroup.quaternion.premultiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1,0,0),Math.PI));
+     await pause(250);
+     check(equal(scene.getState(),target),'whole cube orbit reveals exact preset');
+     check(!scene.isForceLive(),'target becomes new real baseline');
+   }
+   check(commits===4,'one atomic baseline per reveal');
    await scene.solve(); check(equal(scene.getState(),createSolvedState()),'Solve after force');
    check(scene.hasForce(),'Solve retains configured preset');
    scene.setForceSnapshotFromData(cubeStateToSnapshot(target));
@@ -78,9 +91,9 @@ try {
    scene.executeMove('R'); await pause(30); scene.reset(); await pause(300);
    check(equal(scene.getState(),createSolvedState()),'reset single animation');
    scene.destroy(); container.remove();
-   return {commits,hiddenFaces:Object.keys(dots).filter(f=>isFaceHidden(dots[f]))};
+   return {commits};
  });
- console.log('Browser/WebGL: hidden-only force, legal full state, exact preset, worker Solve and reset cancellation passed.',result);
+ console.log('Browser/WebGL: four two-layer mix/reveal cycles, exact new baselines, legal real state, worker Solve and reset cancellation passed.',result);
  }
  await page.reload();
  await page.locator('canvas').waitFor();

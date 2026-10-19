@@ -7,7 +7,7 @@ import {
   snapshotToCubeState,
 } from './RubiksCube';
 import { FACE_KEYS } from './CubeLayout';
-import { FaceDots } from './HiddenForce';
+import { FaceDots } from './ForceLayer';
 import { CubeInteraction } from './CubeInteraction';
 import { CubeStateData, createSolvedState, MoveType } from './CubeState';
 
@@ -22,7 +22,7 @@ export class CubeScene {
   private container: HTMLElement;
   private ro: ResizeObserver | null = null;
   private destroyed = false;
-  private forceTick = 0;
+  private sequenceKind: 'mix' | 'solve' | null = null;
   private operation = 0;
   private running = false;
   private worker: Worker | null = null;
@@ -86,6 +86,9 @@ export class CubeScene {
 
     // Connect move listener
     this.cube.setOnMove((move) => this.handleMoveExecuted(move));
+    this.cube.setOnMotionStart(() => {
+      if (this.sequenceKind !== 'solve') this.cube.force.prepareMix(this.computeFaceDots());
+    });
 
     // Resize handler
     window.addEventListener('resize', this.onResize);
@@ -192,6 +195,7 @@ export class CubeScene {
     this.worker = null;
     this.cancelWait?.();
     this.cancelWait = null;
+    this.sequenceKind = null;
     this.setRunning(false);
   }
 
@@ -224,13 +228,13 @@ export class CubeScene {
   async runMoves(moves: MoveType[]) {
     if (this.isBusy()) return;
     const token = ++this.operation;
+    this.sequenceKind = 'mix';
     this.setRunning(true);
     try {
       await this.play(moves, token);
     } finally {
-      if (token === this.operation) this.setRunning(false);
+      if (token === this.operation) { this.sequenceKind = null; this.setRunning(false); }
     }
-    if (token === this.operation) for (let i = 0; i < moves.length; i++) this.cube.force.noteTurn();
   }
 
   async solve() {
@@ -240,6 +244,9 @@ export class CubeScene {
 
   private async transition(target: CubeStateData) {
     const token = ++this.operation;
+    this.sequenceKind = 'solve';
+    this.cube.force.retire();
+    this.cube.repaintStickers();
     this.setRunning(true);
     try {
       const moves = await this.plan(target);
@@ -252,7 +259,7 @@ export class CubeScene {
     } catch (error) {
       if (token === this.operation) this.onError?.(error instanceof Error ? error.message : 'Operácia zlyhala.');
     } finally {
-      if (token === this.operation) this.setRunning(false);
+      if (token === this.operation) { this.sequenceKind = null; this.setRunning(false); }
     }
   }
 
@@ -263,14 +270,14 @@ export class CubeScene {
     return this.cube.force.isConfigured();
   }
 
-  /** True while hidden legal completions are active. */
+  /** True while the independent force display layer is armed. */
   isForceLive(): boolean {
     return this.cube.force.isArmed();
   }
 
-  /** True while an operation is running. */
+  /** True after a force face has been brought into view. */
   isForceInProgress(): boolean {
-    return this.running && this.cube.force.isReady();
+    return this.cube.force.isRevealing();
   }
 
   /** Orbit is unrestricted: force never relies on hiding an illegal state. */
@@ -307,9 +314,9 @@ export class CubeScene {
     this.onForceActiveChange?.(false);
   }
 
-  /** Configure a target without changing any stickers. */
+  /** Configure a separate display target without changing the real model. */
   private armForce(state: CubeStateData) {
-    this.cube.force.arm(state);
+    this.cube.force.arm(state, this.computeFaceDots());
     this.cube.repaintStickers();
     this.onForceActiveChange?.(true);
   }
@@ -328,24 +335,26 @@ export class CubeScene {
   }
 
   private updateForceLayer() {
-    if (this.isBusy() || !this.cube.force.isReady() || performance.now() - this.forceTick < 80) return;
-    this.forceTick = performance.now();
+    if (this.isBusy() || !this.cube.force.isArmed()) return;
     try {
-      const wasArmed = this.cube.force.isArmed();
-      const state = this.cube.force.evaluate(this.cube.getState(), this.computeFaceDots());
-      if (state) this.cube.commitHiddenState(state);
-      if (wasArmed && !this.cube.force.isArmed()) this.onForceActiveChange?.(false);
+      const update = this.cube.force.evaluate(this.computeFaceDots());
+      if (update.baseline) {
+        // The full force is already displayed. Adopt it atomically, keeping the
+        // underlying real state legal and making the next mix start here.
+        this.cube.commitForceBaseline(update.baseline);
+        this.cube.force.retire();
+        this.cube.repaintStickers();
+        this.onForceActiveChange?.(false);
+      } else if (update.repaint) this.cube.repaintStickers();
     } catch (error) {
       this.cube.force.clear();
+      this.cube.repaintStickers();
       this.onError?.(error instanceof Error ? error.message : 'Force sa nepodarilo vyhodnotiť.');
     }
   }
 
   private handleMoveExecuted(move: MoveType) {
     this.onUserMove?.(move);
-    // Solver moves never re-arm a force or count as spectator mixing.
-    if (this.running) return;
-    this.cube.force.noteTurn();
   }
 
   destroy() {
