@@ -10,6 +10,7 @@ import {
   stickerIndexOnFace,
 } from './CubeLayout';
 import { ForceLayer } from './ForceLayer';
+import { assertCubeState } from './CubeValidity';
 
 export const CUBIE_SIZE = 1;
 export const GAP = 0.055;
@@ -72,6 +73,7 @@ export function faceNormalVec(face: FaceKey): THREE.Vector3 {
 
 /** Nearest palette entry for a stored hex colour (presets keep raw hex). */
 function colorKeyFromHex(hex: string): FaceColor {
+  if (typeof hex !== 'string' || !/^#[0-9a-f]{6}$/i.test(hex)) throw new Error('Neplatná farba presetu.');
   const target = new THREE.Color(hex);
   let best: FaceColor = 'X';
   let bestDist = Infinity;
@@ -92,6 +94,19 @@ function colorKeyFromHex(hex: string): FaceColor {
  * quaternion and keep the one that ends up pointing at that face.
  */
 export function snapshotToCubeState(snapshots: ForceCubieSnapshot[]): CubeStateData {
+  if (!Array.isArray(snapshots) || snapshots.length !== 27) throw new Error('Preset musí obsahovať 27 dielikov.');
+  const occupied = new Set<string>();
+  for (const snap of snapshots) {
+    if (!snap || !snap.logicalPos || !snap.quaternion || !snap.stickerColors) throw new Error('Poškodený preset.');
+    const pos = [snap.logicalPos.x, snap.logicalPos.y, snap.logicalPos.z];
+    const key = pos.join(',');
+    const q = [snap.quaternion.x, snap.quaternion.y, snap.quaternion.z, snap.quaternion.w];
+    if (pos.some(v => !Number.isInteger(v) || Math.abs(v) > 1) || occupied.has(key) ||
+        q.some(v => !Number.isFinite(v)) || Math.abs(q.reduce((n,v) => n + v*v, 0) - 1) > 0.001) {
+      throw new Error('Neplatná poloha alebo natočenie dielika.');
+    }
+    occupied.add(key);
+  }
   const state = createSolvedState();
   for (const face of FACE_KEYS) {
     const colors: FaceColor[] = Array(9).fill('X');
@@ -114,11 +129,13 @@ export function snapshotToCubeState(snapshots: ForceCubieSnapshot[]): CubeStateD
     }
     state[face] = colors;
   }
+  assertCubeState(state);
   return state;
 }
 
 /** Convert a per-face cube state into the persisted snapshot format. */
 export function cubeStateToSnapshot(state: CubeStateData): ForceCubieSnapshot[] {
+  assertCubeState(state);
   const snapshots: ForceCubieSnapshot[] = [];
   for (let x = -1; x <= 1; x++) {
     for (let y = -1; y <= 1; y++) {
@@ -158,21 +175,14 @@ export class RubiksCube {
   // begin until finalizeDrag reparents them.
   private isSettling = false;
 
-  // ── Force layer ──
-  // The second, hidden layer of colours. It is pinned to cube-local face slots
-  // rather than to cubies, so a face showing the force always shows exactly the
-  // programmed target no matter how much mixing has happened. `cubeState` above
-  // stays the honest cube the whole time.
   readonly force = new ForceLayer();
-  // Cubies that are mid-turn. A turning layer can swing a hidden sticker into
-  // view, so those cubies always render the real state — that is what keeps
-  // ordinary layer turns looking like an ordinary cube.
-  private movingCubies: Set<Cubie> = new Set();
+  private animationEpoch = 0;
 
   constructor(scene: THREE.Scene, cubeGroup: THREE.Group, initialState: CubeStateData) {
     this.scene = scene;
     this.cubeGroup = cubeGroup;
-    this.cubeState = initialState;
+    assertCubeState(initialState);
+    this.cubeState = cloneCubeState(initialState);
     this.buildCube(initialState);
   }
 
@@ -184,14 +194,14 @@ export class RubiksCube {
     this.onMoveCb = fn;
   }
 
-  getState() { return this.cubeState; }
+  getState() { return cloneCubeState(this.cubeState); }
   isCurrentlyAnimating() { return this.isAnimating; }
   isDragging() { return this.activeDrag !== null; }
   /** True if any drag, snap-settle, or programmatic animation is in progress. */
   isBusy() { return this.isAnimating || this.activeDrag !== null || this.isSettling; }
 
   private buildCube(state: CubeStateData) {
-    this.cubies.forEach(c => this.cubeGroup.remove(c.mesh));
+    this.disposeCubies();
     this.cubies = [];
 
     for (let x = -1; x <= 1; x++) {
@@ -271,7 +281,7 @@ export class RubiksCube {
 
   /** Begin a drag: detach the layer into a pivot so it can be rotated freely */
   beginDrag(axis: AxisKey, layer: number, axisVec: THREE.Vector3): DragSession | null {
-    if (this.isAnimating || this.activeDrag) return null;
+    if (this.isBusy()) return null;
     const cubies = this.getCubiesInLayer(axis, layer);
     if (cubies.length === 0) return null;
 
@@ -295,9 +305,7 @@ export class RubiksCube {
       currentAngle: 0,
     };
 
-    // The layer is about to swing: strip the force layer off every cubie in it
-    // before it moves, so nothing forced can ever rotate into view.
-    this.beginCubieMotion(cubies);
+
 
     return this.activeDrag;
   }
@@ -420,7 +428,9 @@ export class RubiksCube {
     // Duration proportional to remaining angle, minimum 140ms for a smooth feel
     const duration = Math.max(60, SNAP_ANIM_DURATION * (diff / (Math.PI / 2)));
 
+    const epoch = this.animationEpoch;
     const tick = (now: number) => {
+      if (epoch !== this.animationEpoch) return;
       const t = Math.min((now - startTime) / duration, 1);
       // easeOutCubic — carries the swipe momentum forward and gently
       // decelerates into the final snapped position for a smooth completion.
@@ -443,6 +453,8 @@ export class RubiksCube {
     }
 
     // Reparent cubies back to cubeGroup
+    drag.pivot.quaternion.setFromAxisAngle(drag.axisVec, _finalAngle);
+    this.cubeGroup.updateMatrixWorld(true);
     const q = drag.pivot.quaternion.clone();
     for (const cubie of drag.cubies) {
       const worldPos = new THREE.Vector3();
@@ -480,11 +492,9 @@ export class RubiksCube {
     // Layer is fully reparented and snapped — safe to accept new input again.
     this.isSettling = false;
 
-    // The layer has come to rest: whatever landed on a hidden face gets the
-    // force layer back (invisible), whatever landed in view keeps real colours.
-    this.endCubieMotion();
 
-    this.onStateChangeCb?.(this.cubeState);
+
+    this.onStateChangeCb?.(this.getState());
     if (move) {
       this.onMoveCb?.(move);
     }
@@ -562,7 +572,7 @@ export class RubiksCube {
           cubie.mesh.position.z = Math.round(cubie.mesh.position.z / TOTAL) * TOTAL;
         }
         this.cubeGroup.remove(pivot);
-        this.endCubieMotion();
+
         onComplete();
       }
     };
@@ -603,10 +613,7 @@ export class RubiksCube {
       const cubies = this.getCubiesInLayer(axis, layer);
       const q = new THREE.Quaternion().setFromAxisAngle(axisVec, angle);
 
-      // Strip the force layer off the cubies that are about to swing, while they
-      // are still in their old slots — this has to happen before the state and
-      // the logical positions move, otherwise the wrong stickers get recoloured.
-      this.beginCubieMotion(cubies);
+
 
       for (const cubie of cubies) {
         cubie.logicalPos.applyQuaternion(q);
@@ -623,7 +630,7 @@ export class RubiksCube {
       this.isAnimating = true;
       this.animateLayer(cubies, axisVec, angle, ANIM_DURATION, () => {
         this.isAnimating = false;
-        this.onStateChangeCb?.(this.cubeState);
+        this.onStateChangeCb?.(this.getState());
         this.onMoveCb?.(move);
         callback?.();
         if (this.animQueue.length > 0) {
@@ -633,91 +640,33 @@ export class RubiksCube {
       });
     };
 
-    if (this.isAnimating || this.activeDrag) {
+    if (this.isBusy()) {
       this.animQueue.push(doMove);
     } else {
       doMove();
     }
   }
 
-  // ─── Force layer ────────────────────────────────────────────
-  //
-  // The cube carries two independent colour layers at all times:
-  //
-  //   1. the real state (`cubeState`) — the honest cube. Every turn, scramble
-  //      and solve acts on it and only on it.
-  //   2. the force layer (`force`) — the programmed target, pinned to cube-local
-  //      face slots so it survives any amount of mixing.
-  //
-  // A face shows the force while it is out of sight and the real state while it
-  // faces the viewer; CubeScene feeds the layer the cube's orientation each
-  // frame. Turning layers therefore looks like a perfectly ordinary cube, yet
-  // every face the viewer cannot see is already carrying the force.
-
-  /**
-   * Copy the force colours of one face into the real state.
-   *
-   * Called the moment a forced face rotates into view: the colours the viewer is
-   * now looking at become the truth, so they can never change back. The swap
-   * itself is invisible — the face already displays exactly these colours — only
-   * the bookkeeping underneath changes.
-   */
-  commitForceFace(face: FaceKey) {
-    const colors = this.force.targetColors(face);
-    if (!colors) return;
-    this.cubeState = cloneCubeState(this.cubeState);
-    this.cubeState[face] = colors;
-  }
-
-  /** Mark cubies as mid-turn — while moving they always render real colours. */
-  private beginCubieMotion(cubies: Cubie[]) {
-    if (!this.force.isArmed()) return;
-    this.movingCubies = new Set(cubies);
+  /** Whole-state force commit after visibility and cubie constraints were checked. */
+  commitHiddenState(state: CubeStateData) {
+    if (this.isBusy()) return;
+    assertCubeState(state);
+    this.cubeState = cloneCubeState(state);
+    this.moveHistory = [];
     this.repaintStickers();
+    this.onStateChangeCb?.(this.getState());
   }
 
-  /** The turn has come to rest — go back to the normal per-face rule. */
-  private endCubieMotion() {
-    if (this.movingCubies.size === 0) return;
-    this.movingCubies.clear();
-    this.repaintStickers();
-  }
-
-  /**
-   * Recolour all 54 stickers from the two layers.
-   *
-   * For every face slot we resolve which cubie sits there and which of its
-   * stickers points outward, then paint it from the real state or the force
-   * layer depending on that face's render mode.
-   */
+  /** Paint from one complete, validated cube state. */
   repaintStickers() {
-    const byPos = new Map<string, Cubie>();
     for (const cubie of this.cubies) {
-      const key = `${Math.round(cubie.logicalPos.x)},${Math.round(cubie.logicalPos.y)},${Math.round(cubie.logicalPos.z)}`;
-      byPos.set(key, cubie);
-    }
-
-    for (const face of FACE_KEYS) {
-      const forceColors = this.force.modeOf(face) === 'force'
-        ? this.force.targetColors(face)
-        : null;
-
-      for (const pos of faceCubiePositions(face)) {
-        const cubie = byPos.get(`${pos.x},${pos.y},${pos.z}`);
-        if (!cubie) continue;
+      const {x,y,z} = cubie.logicalPos;
+      for (const face of FACE_KEYS) {
+        if (!cubieOnFace(x,y,z,face)) continue;
         const sticker = this.getStickerOnFace(cubie, face);
-        if (!sticker) continue;
-        const material = sticker.material;
-        if (!(material instanceof THREE.MeshPhongMaterial)) continue;
-
-        // A cubie in motion can swing into view mid-turn, so it never wears the
-        // force layer — that is the second layer showing through underneath.
-        const source = forceColors && !this.movingCubies.has(cubie)
-          ? forceColors
-          : this.cubeState[face];
-
-        const colorKey = source[stickerIndexOnFace(pos.x, pos.y, pos.z, face)];
-        material.color.set(FACE_COLORS[colorKey] ?? FACE_COLORS['X']);
+        if (sticker?.material instanceof THREE.MeshPhongMaterial) {
+          sticker.material.color.set(FACE_COLORS[this.cubeState[face][stickerIndexOnFace(x,y,z,face)]]);
+        }
       }
     }
   }
@@ -744,14 +693,40 @@ export class RubiksCube {
   }
 
   setState(state: CubeStateData) {
+    assertCubeState(state);
+    this.animationEpoch++;
     this.cubeState = cloneCubeState(state);
     this.isAnimating = false;
     this.activeDrag = null;
     this.activePivot = null;
     this.animQueue = [];
     this.moveHistory = [];
-    this.movingCubies.clear();
+    this.isSettling = false;
     this.buildCube(state);
+    this.onStateChangeCb?.(this.getState());
+  }
+
+  private disposeCubies() {
+    for (const cubie of this.cubies) {
+      cubie.mesh.traverse(obj => {
+        if (obj instanceof THREE.Mesh) {
+          obj.geometry.dispose();
+          const materials = Array.isArray(obj.material) ? obj.material : [obj.material];
+          materials.forEach(material => material.dispose());
+        }
+      });
+      cubie.mesh.removeFromParent();
+    }
+    for (const child of [...this.cubeGroup.children]) child.removeFromParent();
+  }
+
+  destroy() {
+    this.animationEpoch++;
+    this.activePivot = null;
+    this.activeDrag = null;
+    this.animQueue = [];
+    this.disposeCubies();
+    this.cubies = [];
   }
 
   getMoveHistory(): MoveType[] { return [...this.moveHistory]; }

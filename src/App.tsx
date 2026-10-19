@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { CubeScene } from './cube/CubeScene';
 import { isSolved, MoveType } from './cube/CubeState';
-import { ForceCubieSnapshot } from './cube/RubiksCube';
+import { ForceCubieSnapshot, snapshotToCubeState } from './cube/RubiksCube';
+import { storage } from './storage';
 
 const PRESET_STORAGE_KEY = 'cubemix_presets';
 const DEFAULT_PRESET_KEY = 'cubemix_default_preset';
@@ -12,7 +13,7 @@ const SHOW_TITLE_KEY = 'cubemix_show_title';
 
 /** Arming the default force at launch is the default behaviour. */
 function isForceOnStartup(): boolean {
-  return localStorage.getItem(FORCE_ON_STARTUP_KEY) !== 'false';
+  return storage.getItem(FORCE_ON_STARTUP_KEY) !== 'false';
 }
 
 interface Preset {
@@ -24,13 +25,23 @@ interface Preset {
 
 function loadPresets(): Preset[] {
   try {
-    const raw = localStorage.getItem(PRESET_STORAGE_KEY);
-    return raw ? JSON.parse(raw) : [];
+    const raw = storage.getItem(PRESET_STORAGE_KEY);
+    const parsed: unknown = raw ? JSON.parse(raw) : [];
+    if (!Array.isArray(parsed)) return [];
+    const ids = new Set<string>();
+    return parsed.filter((p): p is Preset => {
+      try {
+        if (!p || typeof p.id !== 'string' || typeof p.name !== 'string' || !Number.isFinite(p.savedAt) || ids.has(p.id)) return false;
+        snapshotToCubeState(p.forceSnapshot);
+        ids.add(p.id);
+        return true;
+      } catch { return false; }
+    }).slice(0, MAX_PRESETS);
   } catch { return []; }
 }
 
 function savePresets(presets: Preset[]) {
-  localStorage.setItem(PRESET_STORAGE_KEY, JSON.stringify(presets));
+  return storage.setItem(PRESET_STORAGE_KEY, JSON.stringify(presets));
 }
 
 const SCRAMBLE_MOVES: MoveType[] = ['U', "U'", 'D', "D'", 'F', "F'", 'B', "B'", 'L', "L'", 'R', "R'"];
@@ -57,11 +68,13 @@ function ForcePanel({
     onClose, 
     cubeScene,
     onTitleToggle,
+    busy,
   }: { 
     isOpen: boolean; 
     onClose: () => void; 
     cubeScene: CubeScene | null;
     onTitleToggle: (show: boolean) => void;
+    busy: boolean;
   }) {
     const [forceSnapshotExists, setForceSnapshotExists] = useState(false);
     const [status, setStatus] = useState<string>('');
@@ -69,8 +82,8 @@ function ForcePanel({
     const [defaultPresetId, setDefaultPresetId] = useState<string | null>(null);
     const [namingSlot, setNamingSlot] = useState<string | null>(null);
     const [nameInput, setNameInput] = useState('');
-    const [bgUrl, setBgUrl] = useState<string>(() => localStorage.getItem(BG_STORAGE_KEY) ?? '');
-    const [showTitle, setShowTitle] = useState<boolean>(() => localStorage.getItem(SHOW_TITLE_KEY) !== 'false');
+    const [bgUrl, setBgUrl] = useState<string>(() => storage.getItem(BG_STORAGE_KEY) ?? '');
+    const [showTitle, setShowTitle] = useState<boolean>(() => storage.getItem(SHOW_TITLE_KEY) !== 'false');
     const [forceOnStartup, setForceOnStartup] = useState<boolean>(isForceOnStartup);
     const bgInputRef = useRef<HTMLInputElement>(null);
 
@@ -79,23 +92,13 @@ function ForcePanel({
         if (cubeScene) setForceSnapshotExists(cubeScene.hasForce());
         const loaded = loadPresets();
         setPresets(loaded);
-        setDefaultPresetId(localStorage.getItem(DEFAULT_PRESET_KEY));
+        setDefaultPresetId(storage.getItem(DEFAULT_PRESET_KEY));
         setStatus('');
         setNamingSlot(null);
         setNameInput('');
-        setBgUrl(localStorage.getItem(BG_STORAGE_KEY) ?? '');
-        setShowTitle(localStorage.getItem(SHOW_TITLE_KEY) !== 'false');
+        setBgUrl(storage.getItem(BG_STORAGE_KEY) ?? '');
+        setShowTitle(storage.getItem(SHOW_TITLE_KEY) !== 'false');
         setForceOnStartup(isForceOnStartup());
-        // Arm the default preset on open — the force lands on the hidden faces
-        // straight away, the three faces in view keep their real colours.
-        const defId = localStorage.getItem(DEFAULT_PRESET_KEY);
-        if (defId && cubeScene) {
-          const defPreset = loaded.find(p => p.id === defId);
-          if (defPreset) {
-            cubeScene.setForceSnapshotFromData(defPreset.forceSnapshot);
-            setForceSnapshotExists(true);
-          }
-        }
       }
     }, [cubeScene, isOpen]);
 
@@ -105,16 +108,18 @@ function ForcePanel({
       const reader = new FileReader();
       reader.onload = (ev) => {
         const dataUrl = ev.target?.result as string;
-        localStorage.setItem(BG_STORAGE_KEY, dataUrl);
+        if (!storage.setItem(BG_STORAGE_KEY, dataUrl)) { setStatus('Pozadie sa nepodarilo uložiť. Skús menší obrázok.'); return; }
         setBgUrl(dataUrl);
         applyBackground(dataUrl);
         setStatus('Pozadie nastavené');
       };
+      if (!file.type.startsWith('image/') || file.size > 3 * 1024 * 1024) { setStatus('Vyber obrázok do 3 MB.'); return; }
+      reader.onerror = () => setStatus('Obrázok sa nepodarilo načítať.');
       reader.readAsDataURL(file);
     };
 
     const handleRemoveBg = () => {
-      localStorage.removeItem(BG_STORAGE_KEY);
+      storage.removeItem(BG_STORAGE_KEY);
       setBgUrl('');
       applyBackground('');
       setStatus('Pozadie odstránené');
@@ -123,14 +128,14 @@ function ForcePanel({
     const handleTitleToggle = () => {
       const next = !showTitle;
       setShowTitle(next);
-      localStorage.setItem(SHOW_TITLE_KEY, String(next));
+      storage.setItem(SHOW_TITLE_KEY, String(next));
       onTitleToggle(next);
     };
 
     const handleForceOnStartupToggle = () => {
       const next = !forceOnStartup;
       setForceOnStartup(next);
-      localStorage.setItem(FORCE_ON_STARTUP_KEY, String(next));
+      storage.setItem(FORCE_ON_STARTUP_KEY, String(next));
     };
 
     if (!isOpen) return null;
@@ -157,7 +162,7 @@ function ForcePanel({
         ...presets.filter(p => p.id !== namingSlot),
         { id: namingSlot, name, forceSnapshot, savedAt: Date.now() },
       ].slice(-MAX_PRESETS);
-      savePresets(updated);
+      if (!savePresets(updated)) { setStatus('Presety sa nepodarilo uložiť. Úložisko je nedostupné alebo plné.'); return; }
       setPresets(updated);
       setNamingSlot(null);
       setNameInput('');
@@ -166,17 +171,17 @@ function ForcePanel({
 
     const handleLoadPreset = (preset: Preset) => {
       if (!cubeScene) return;
-      cubeScene.setForceSnapshotFromData(preset.forceSnapshot);
+      if (!cubeScene.setForceSnapshotFromData(preset.forceSnapshot)) { setStatus('Preset sa nepodarilo načítať.'); return; }
       setForceSnapshotExists(true);
       setStatus(`Force nastavený: "${preset.name}"`);
     };
 
     const handleDeletePreset = (id: string) => {
       const updated = presets.filter(p => p.id !== id);
-      savePresets(updated);
+      if (!savePresets(updated)) { setStatus('Presety sa nepodarilo uložiť. Úložisko je nedostupné alebo plné.'); return; }
       setPresets(updated);
       if (defaultPresetId === id) {
-        localStorage.removeItem(DEFAULT_PRESET_KEY);
+        storage.removeItem(DEFAULT_PRESET_KEY);
         setDefaultPresetId(null);
       }
     };
@@ -184,11 +189,11 @@ function ForcePanel({
     const handleSetDefault = (id: string) => {
       if (defaultPresetId === id) {
         // Unpin
-        localStorage.removeItem(DEFAULT_PRESET_KEY);
+        storage.removeItem(DEFAULT_PRESET_KEY);
         setDefaultPresetId(null);
         setStatus('Predvolený preset zrušený');
       } else {
-        localStorage.setItem(DEFAULT_PRESET_KEY, id);
+        storage.setItem(DEFAULT_PRESET_KEY, id);
         setDefaultPresetId(id);
         // Set as force snapshot immediately (does not change cube state)
         const preset = presets.find(p => p.id === id);
@@ -209,7 +214,7 @@ function ForcePanel({
             <button onClick={onClose}>✕</button>
           </div>
 
-          <div className="force-panel-content">
+          <fieldset className="force-panel-content" disabled={busy} style={{border: 0, margin: 0, minWidth: 0}}>
 
             {/* ── Force snapshot section ── */}
             <div className="force-section-title">Force Mode</div>
@@ -225,11 +230,10 @@ function ForcePanel({
               </button>
             </div>
             <div className="force-hint">
-              <p><strong>Žiadne dvojkliknutie.</strong> Force sedí na skrytých stranách automaticky, stále.</p>
-              <p><strong>Otáčanie vrstiev</strong> vyzerá úplne normálne — kocka má reálne farby.</p>
-              <p><strong>Prvých 5 ťahov</strong> sa kocka nedá otáčať celá — je zamknutá, kým sa force neprikryje.</p>
-              <p><strong>Keď kockou otočíš</strong>, odkryté strany už majú force a ostanú tak. Nové skryté strany si vezmú ďalšiu časť force.</p>
-              <p><strong>Po dokončení</strong> sa force sám vráti, len čo kocku znova zamiešaš — dá sa opakovať bez resetu.</p>
+              <p><strong>Force mení iba skryté nálepky.</strong> Viditeľné strany zostanú bez zmeny a celá kocka zostáva fyzicky dosiahnuteľná.</p>
+              <p><strong>Po 5 ťahoch</strong> sa force aktivuje. Otáčaním kocky odkrývaš ďalšie časti presetu; nemožná zmena počká na ďalšie otočenie alebo zamiešanie.</p>
+              <p><strong>Otáčanie celej kocky</strong> zostáva voľné. Každý dokončený stav je fyzicky dosiahnuteľný.</p>
+              <p><strong>Opakovanie:</strong> ďalšie miešanie force pripraví znovu. Reset uložený force zachová.</p>
             </div>
 
             {/* ── Divider ── */}
@@ -307,7 +311,7 @@ function ForcePanel({
 
             {/* ── Preset snapshots section ── */}
             <div className="force-section-title">Presety kocky</div>
-            <div className="preset-hint">Ťuknutím nasadíš preset ako force — skryté strany ho dostanú okamžite. Hviezdičkou nastavíš predvolený (nasadí sa sám pri spustení).</div>
+            <div className="preset-hint">Ťuknutím nastavíš cieľ force. Menia sa iba skryté nálepky a vždy zostáva zachovaný legálny stav kocky. Hviezdičkou nastavíš predvolený (nasadí sa sám pri spustení).</div>
 
             {presets.length === 0 && (
               <div className="force-status">Žiadne presety uložené</div>
@@ -317,12 +321,11 @@ function ForcePanel({
               {presets.map(preset => {
                 const isDefault = defaultPresetId === preset.id;
                 return (
-                  <button
+                  <div
                     key={preset.id}
                     className={`preset-card${isDefault ? ' preset-card-default' : ''}`}
-                    onClick={() => handleLoadPreset(preset)}
                   >
-                    <span className="preset-card-name">{preset.name}</span>
+                    <button className="preset-card-name" onClick={() => handleLoadPreset(preset)}>{preset.name}</button>
                     <div className="preset-card-actions" onClick={e => e.stopPropagation()}>
                       <button
                         className={`preset-star-btn${isDefault ? ' preset-star-on' : ''}`}
@@ -344,7 +347,7 @@ function ForcePanel({
                         </svg>
                       </button>
                     </div>
-                  </button>
+                  </div>
                 );
               })}
             </div>
@@ -376,8 +379,8 @@ function ForcePanel({
               )
             )}
 
-            {status && <div className="force-status">{status}</div>}
-          </div>
+            {status && <div className="force-status" role="status">{status}</div>}
+          </fieldset>
         </div>
       </div>
     );
@@ -445,7 +448,6 @@ function SidePanel({
           <button
             className="drawer-action-btn drawer-action-reset"
             onClick={() => { onReset(); onClose(); }}
-            disabled={busy}
           >
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <polyline points="1 4 1 10 7 10" /><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10" />
@@ -465,16 +467,16 @@ export default function App() {
 
   // Apply saved background image immediately on mount
   useEffect(() => {
-    const saved = localStorage.getItem(BG_STORAGE_KEY);
+    const saved = storage.getItem(BG_STORAGE_KEY);
     if (saved) applyBackground(saved);
   }, []);
-  const [showTitle, setShowTitle] = useState<boolean>(() => localStorage.getItem(SHOW_TITLE_KEY) !== 'false');
+  const [showTitle, setShowTitle] = useState<boolean>(() => storage.getItem(SHOW_TITLE_KEY) !== 'false');
   const [showPanel, setShowPanel] = useState(false);
 
   // PWA install prompt
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const [installPrompt, setInstallPrompt] = useState<any>(null);
-  const [installDismissed, setInstallDismissed] = useState(() => localStorage.getItem('pwa_dismissed') === '1');
+  const [installDismissed, setInstallDismissed] = useState(() => storage.getItem('pwa_dismissed') === '1');
 
   useEffect(() => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -495,7 +497,7 @@ export default function App() {
 
   const handleInstallDismiss = () => {
     setInstallDismissed(true);
-    localStorage.setItem('pwa_dismissed', '1');
+    storage.setItem('pwa_dismissed', '1');
   };
 
   const showInstallBar = !!installPrompt && !installDismissed;
@@ -503,27 +505,35 @@ export default function App() {
   const [solving, setSolving] = useState(false);
   const [showSolvedBanner, setShowSolvedBanner] = useState(false);
   const [showForcePanel, setShowForcePanel] = useState(false);
-  const scrambleRef = useRef(false);
-  const solveRef = useRef(false);
+  const [sceneBusy, setSceneBusy] = useState(false);
+  const [error, setError] = useState('');
+  const bannerTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const titlePressTimer = useRef<number | null>(null);
+  const titleLongPress = useRef(false);
+  const uiOperation = useRef(0);
 
   useEffect(() => {
     if (!mountRef.current) return;
-    const scene = new CubeScene(mountRef.current);
+    let scene: CubeScene;
+    try { scene = new CubeScene(mountRef.current); }
+    catch { setError('3D kocku sa nepodarilo spustiť. Skontroluj podporu WebGL v prehliadači.'); return; }
     cubeSceneRef.current = scene;
+    scene.onBusyChange = setSceneBusy;
+    scene.onError = setError;
     scene.setOnStateChange((state) => {
       const s = isSolved(state);
       setSolved(s);
+      if (!s) setShowSolvedBanner(false);
       if (s) {
         setShowSolvedBanner(true);
-        setTimeout(() => setShowSolvedBanner(false), 3000);
+        if (bannerTimer.current) clearTimeout(bannerTimer.current);
+        bannerTimer.current = setTimeout(() => setShowSolvedBanner(false), 3000);
       }
     });
 
-    // Arm the default preset right away: the three faces out of view get the
-    // force layer immediately, the cube on screen stays completely normal.
+    // Configure the default target without changing any visible or hidden sticker.
     if (isForceOnStartup()) {
-      const defId = localStorage.getItem(DEFAULT_PRESET_KEY);
+      const defId = storage.getItem(DEFAULT_PRESET_KEY);
       if (defId) {
         const defPreset = loadPresets().find(p => p.id === defId);
         if (defPreset) scene.setForceSnapshotFromData(defPreset.forceSnapshot);
@@ -531,80 +541,59 @@ export default function App() {
     }
 
     return () => {
+      uiOperation.current++;
       if (titlePressTimer.current) clearTimeout(titlePressTimer.current);
+      if (bannerTimer.current) clearTimeout(bannerTimer.current);
+      scene.onBusyChange = undefined;
+      scene.onError = undefined;
       scene.destroy(); cubeSceneRef.current = null;
     };
   }, []);
 
-  const handleScramble = useCallback(() => {
-    if (!cubeSceneRef.current || scrambling || solving) return;
-    solveRef.current = false;
-    setSolving(false);
-    setScrambling(true);
-    scrambleRef.current = true;
-    setSolved(false);
-    setShowSolvedBanner(false);
-    cubeSceneRef.current.clearHistory();
-    const total = 20;
-    let count = 0;
-    let lastFace = '';
-    const next = () => {
-      if (count >= total || !scrambleRef.current) {
-        setScrambling(false);
-        scrambleRef.current = false;
-        return;
-      }
-      let move: MoveType;
-      do { move = SCRAMBLE_MOVES[Math.floor(Math.random() * SCRAMBLE_MOVES.length)]; } while (move[0] === lastFace);
-      lastFace = move[0];
-      cubeSceneRef.current?.executeMove(move);
-      count++;
-      setTimeout(next, 90);
-    };
-    next();
-  }, [scrambling, solving]);
-
-  const handleSolve = useCallback(() => {
-    // Once part of the force has been revealed the move history no longer
-    // describes the cube on screen, so replaying it backwards is meaningless.
-    if (!cubeSceneRef.current || scrambling || solving || solved || cubeSceneRef.current.isForceInProgress()) return;
-    const sequence = cubeSceneRef.current.getSolveSequence();
-    if (sequence.length === 0) return;
-    setSolving(true);
-    solveRef.current = true;
-    let index = 0;
-    const next = () => {
-      if (index >= sequence.length || !solveRef.current) {
-        setSolving(false);
-        solveRef.current = false;
-        return;
-      }
-      cubeSceneRef.current?.executeSolveMove(sequence[index]);
-      index++;
-      setTimeout(next, 220);
-    };
-    next();
-  }, [scrambling, solving, solved]);
-
-  const handleReset = useCallback(() => {
-    if (!cubeSceneRef.current) return;
-    scrambleRef.current = false;
-    solveRef.current = false;
-    setScrambling(false);
-    setSolving(false);
-    cubeSceneRef.current.reset();
-    setShowSolvedBanner(false);
+  const handleScramble = useCallback(async () => {
+    const scene = cubeSceneRef.current;
+    if (!scene || scene.isBusy()) return;
+    const token = ++uiOperation.current;
+    setError(''); setScrambling(true); setShowSolvedBanner(false);
+    const moves: MoveType[] = [];
+    while (moves.length < 20) {
+      const move = SCRAMBLE_MOVES[Math.floor(Math.random() * SCRAMBLE_MOVES.length)];
+      if (moves.at(-1)?.[0] !== move[0]) moves.push(move);
+    }
+    try { await scene.runMoves(moves); }
+    finally { if (cubeSceneRef.current === scene && token === uiOperation.current) setScrambling(false); }
   }, []);
 
-  const busy = scrambling || solving;
+  const handleSolve = useCallback(async () => {
+    const scene = cubeSceneRef.current;
+    if (!scene || scene.isBusy()) return;
+    const token = ++uiOperation.current;
+    setError(''); setSolving(true);
+    try { await scene.solve(); }
+    finally { if (cubeSceneRef.current === scene && token === uiOperation.current) setSolving(false); }
+  }, []);
 
-  const onTitleMouseDown = () => {
+  const handleReset = useCallback(() => {
+    const scene = cubeSceneRef.current;
+    if (!scene) return;
+    uiOperation.current++;
+    scene.reset();
+    setScrambling(false); setSolving(false); setError(''); setShowSolvedBanner(false);
+  }, []);
+
+  const busy = sceneBusy || scrambling || solving;
+
+  const onTitlePointerDown = () => {
+    titleLongPress.current = false;
+    if (titlePressTimer.current) clearTimeout(titlePressTimer.current);
     titlePressTimer.current = window.setTimeout(() => {
+      titleLongPress.current = true;
+      setShowPanel(false);
       setShowForcePanel(true);
     }, 3000);
   };
 
-  const onTitleMouseUp = () => {
+  const onTitlePointerUp = () => {
     if (titlePressTimer.current) {
       clearTimeout(titlePressTimer.current);
       titlePressTimer.current = null;
@@ -618,12 +607,15 @@ export default function App() {
       <header className="topbar">
         <button 
           className="topbar-icon" 
-          onClick={() => setShowPanel(!showPanel)}
-          onMouseDown={onTitleMouseDown}
-          onMouseUp={onTitleMouseUp}
-          onMouseLeave={onTitleMouseUp}
-          onTouchStart={onTitleMouseDown}
-          onTouchEnd={onTitleMouseUp}
+          aria-label="Menu"
+          onClick={() => {
+            if (titleLongPress.current) { titleLongPress.current = false; return; }
+            setShowPanel(value => !value);
+          }}
+          onPointerDown={onTitlePointerDown}
+          onPointerUp={onTitlePointerUp}
+          onPointerLeave={onTitlePointerUp}
+          onPointerCancel={onTitlePointerUp}
         >
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <line x1="3" y1="6" x2="21" y2="6" /><line x1="3" y1="12" x2="21" y2="12" /><line x1="3" y1="18" x2="21" y2="18" />
@@ -641,6 +633,8 @@ export default function App() {
       {showSolvedBanner && (
         <div className="solved-toast">SOLVED!</div>
       )}
+
+      {error && <div className="solved-toast" role="alert" onClick={() => setError('')}>{error}</div>}
 
       {/* Cube area */}
       <div className="cube-area">
@@ -666,6 +660,7 @@ export default function App() {
         onClose={() => setShowForcePanel(false)}
         cubeScene={cubeSceneRef.current}
         onTitleToggle={setShowTitle}
+        busy={busy}
       />
 
       {/* PWA Install Banner */}
