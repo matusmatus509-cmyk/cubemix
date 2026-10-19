@@ -230,10 +230,10 @@ function ForcePanel({
               </button>
             </div>
             <div className="force-hint">
-              <p><strong>Force mení iba skryté nálepky.</strong> Viditeľné strany zostanú bez zmeny a celá kocka zostáva fyzicky dosiahnuteľná.</p>
-              <p><strong>Po 5 ťahoch</strong> sa force aktivuje. Otáčaním kocky odkrývaš ďalšie časti presetu; nemožná zmena počká na ďalšie otočenie alebo zamiešanie.</p>
-              <p><strong>Otáčanie celej kocky</strong> zostáva voľné. Každý dokončený stav je fyzicky dosiahnuteľný.</p>
-              <p><strong>Opakovanie:</strong> ďalšie miešanie force pripraví znovu. Reset uložený force zachová.</p>
+              <p><strong>Dve vrstvy:</strong> pri miešaní sa vždy ukazuje reálny stav kocky. Všetky tri skryté strany majú pripravený presný force.</p>
+              <p><strong>Otoč celú kocku:</strong> odkryješ force. Strany, ktoré schováš, si prevezmú zvyšok force.</p>
+              <p><strong>Nový východiskový bod:</strong> po úplnom odhalení sa celá kocka stane uloženým force stavom.</p>
+              <p><strong>Opakovanie:</strong> opäť miešaj normálne a otočením kocky znovu odhalíš rovnaký force. Reset netreba.</p>
             </div>
 
             {/* ── Divider ── */}
@@ -311,7 +311,7 @@ function ForcePanel({
 
             {/* ── Preset snapshots section ── */}
             <div className="force-section-title">Presety kocky</div>
-            <div className="preset-hint">Ťuknutím nastavíš cieľ force. Menia sa iba skryté nálepky a vždy zostáva zachovaný legálny stav kocky. Hviezdičkou nastavíš predvolený (nasadí sa sám pri spustení).</div>
+            <div className="preset-hint">Ťuknutím pripravíš force na všetkých troch skrytých stranách. Pri miešaní sa zobrazuje reálna vrstva, pri otočení celej kocky force. Hviezdičkou nastavíš predvolený (nasadí sa sám pri spustení).</div>
 
             {presets.length === 0 && (
               <div className="force-status">Žiadne presety uložené</div>

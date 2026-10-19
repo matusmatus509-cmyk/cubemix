@@ -21,19 +21,31 @@ stredných vrstiev a zmien vykonaných force režimom.
 ## Force
 
 Podrž tlačidlo menu 3 sekundy. Ulož legálny stav ako preset a načítaj ho ako
-force. Po piatich dokončených ťahoch sa force aktivuje. Pri každom pohľade
-mení iba bezpečne skryté nálepky. Viditeľné a hraničné steny sú chránené;
-celá kocka musí mať platné dieliky, orientácie, paritu a počty farieb.
+force. Kocka má dve oddelené vrstvy:
 
-Nie každý preset je kompatibilný s práve viditeľnými nálepkami. Vtedy sa
-vykoná iba legálna skrytá časť zmeny; zvyšok vyžaduje ďalšie otočenie alebo
-zamiešanie. Okamžité dokončenie ľubovoľného presetu pri ľubovoľnom pohľade sa
-nezaručuje. Preset sa pri ťahoch stredných vrstiev priestorovo zarovná podľa
-stredov aktuálnej kocky. Force nikdy automaticky neotáča viditeľné vrstvy.
+- **Reálny stav:** všetky ťahy, animácie, uloženie presetu a Solve používajú
+  úplný fyzicky dosiahnuteľný stav kocky.
+- **Force zobrazenie:** všetky tri skryté strany nesú presný uložený preset,
+  nezávisle od miešania reálnej vrstvy.
 
-Reset zachová načítaný force, vymazanie force zachová aktuálny legálny stav.
-Po dokončení sa force opäť pripraví pri ďalšom miešaní. Poškodené alebo
-fyzicky nemožné staré presety sa nenačítajú.
+Pred začiatkom každého ťahu sa force z celej pohybujúcej sa kocky odstráni,
+vrátane skrytých nálepiek, ktoré môžu počas ťahu prísť do záberu. Po zastavení
+sa vráti na skryté strany. Viditeľné strany sa pri miešaní správajú normálne.
+
+Otočenie celej kocky odhalí force vrstvu. Pôvodne viditeľné strany ju dostanú
+až po prechode mimo záberu. Keď už všetkých šesť strán zobrazuje force, celý
+uložený legálny stav sa naraz prevezme ako nový reálny základ. Ďalšie miešanie
+vychádza z neho a pripraví rovnaký force na ďalšie odhalenie. Netreba reset ani
+päť úvodných ťahov; otáčanie celej kocky nie je zamknuté.
+
+Zobrazovací prekryv počas prechodu nie je jeden fyzický šesťstranový stav:
+spája reálnu a force vrstvu. Do reálneho stavu sa nikdy nekopírujú jednotlivé
+force steny, takže nevznikajú nelegálne kombinácie v modeli, histórii ani
+uložených presetoch. Prerušené odhalenie ďalším miešaním opäť ukáže reálnu vrstvu.
+
+Reset zachová načítaný force, vymazanie force zachová aktuálny reálny stav.
+Solve force pozastaví až do ďalšieho miešania. Poškodené alebo fyzicky nemožné
+presety sa nenačítajú.
 
 ## Prehliadačové kontroly
 

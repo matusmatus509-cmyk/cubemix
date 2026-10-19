@@ -38,11 +38,11 @@ for (const move of moves) {
   assert.deepEqual(cube.getState(), expected);
   assert.deepEqual(renderedState(), expected, `rendered stickers after ${move}`);
 }
-// Hidden commits repaint complete legal states; later moves must still agree with geometry.
+// Baseline commits repaint complete legal states; later moves must still agree with geometry.
 const hidden = createSolvedState();
 [hidden.D[7],hidden.B[7]] = [hidden.B[7],hidden.D[7]];
 [hidden.B[5],hidden.L[3]] = [hidden.L[3],hidden.B[5]];
-cube.commitHiddenState(hidden);
+cube.commitForceBaseline(hidden);
 expected = structuredClone(hidden);
 assert.deepEqual(renderedState(), expected);
 // Queue many turns together, then verify geometry independently of getState().
@@ -72,5 +72,19 @@ assert.deepEqual(renderedState(), createSolvedState());
 assert.equal(group.children.length, 27, 'no abandoned pivot groups after reset');
 const copy = cube.getState(); copy.U[0] = 'X';
 assert.deepEqual(cube.getState(), createSolvedState());
+const view = {U:-.6,F:-.6,R:-.6,D:.6,B:.6,L:.6};
+const forceTarget = applyMove(createSolvedState(),'R');
+cube.force.arm(forceTarget,view);
+cube.setOnMotionStart(() => cube.force.prepareMix(view));
+cube.repaintStickers();
+assert.deepEqual(cube.getState(),createSolvedState(),'painting force must not change the real state');
+assert.deepEqual(snapshotToCubeState(cube.takeForceSnapshot()),createSolvedState(),'saving must ignore the display layer');
+cube.beginDrag('x',1,v);
+// At angle zero the entire rendered cube, including stationary cubies, must be real.
+assert.deepEqual(renderedState(),createSolvedState(),'drag strips all force stickers before motion');
+cube.setDragAngle(.5); cube.cancelDrag(); flush();
+assert.deepEqual(cube.getState(),createSolvedState(),'cancelled force drag preserves real state');
+cube.force.clear(); cube.repaintStickers();
+assert.deepEqual(renderedState(),createSolvedState());
 cube.destroy(); flush(); assert.equal(group.children.length,0);
 console.log('Animation: all 18 moves and drags, 100 queued turns, snap exclusion, reset cancellation, rendered state and disposal passed.');
