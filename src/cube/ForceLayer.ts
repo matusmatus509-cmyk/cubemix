@@ -37,7 +37,6 @@ export class ForceLayer {
   isConfigured() { return this.configured !== null; }
   isArmed() { return this.target !== null; }
   isRevealing() { return this.target !== null && this.revealing; }
-  isRotationLocked() { return false; }
   modeOf(face: FaceKey): FaceRenderMode { return this.target ? this.modes[face] : 'real'; }
   targetColors(face: FaceKey): FaceColor[] | null { return this.target ? [...this.target[face]] : null; }
 

@@ -84,6 +84,8 @@ export class CubeScene {
       this.cubeGroup
     );
 
+    this.interaction.onDoubleCornerTap = () => { this.finishForce(); };
+
     // Connect move listener
     this.cube.setOnMove((move) => this.handleMoveExecuted(move));
     this.cube.setOnMotionStart(() => {
@@ -220,7 +222,7 @@ export class CubeScene {
       if (token !== this.operation || this.destroyed) return;
       await new Promise<void>(resolve => {
         this.cancelWait = resolve;
-        this.cube.executeMove(move, () => { this.cancelWait = null; resolve(); });
+        this.cube.executeMove(move, () => { this.cancelWait = null; resolve(); }, this.sequenceKind === 'solve');
       });
     }
   }
@@ -280,9 +282,9 @@ export class CubeScene {
     return this.cube.force.isRevealing();
   }
 
-  /** Orbit is unrestricted: force never relies on hiding an illegal state. */
+  /** Five completed layer turns unlock orbit from a solved start. */
   isRotationLocked(): boolean {
-    return this.cube.force.isRotationLocked();
+    return this.cube.isRotationLocked();
   }
 
   /** Load a force layer from a saved preset. It is live from this moment on. */
@@ -314,6 +316,17 @@ export class CubeScene {
     this.onForceActiveChange?.(false);
   }
 
+  /** End this force session at its exact target; ordinary moves never re-arm it. */
+  finishForce(): boolean {
+    if (this.destroyed || this.isBusy()) return false;
+    const target = this.cube.force.configuredState();
+    if (!target) return false;
+    this.cube.force.clear();
+    this.cube.commitForceBaseline(target);
+    this.onForceActiveChange?.(false);
+    return true;
+  }
+
   /** Configure a separate display target without changing the real model. */
   private armForce(state: CubeStateData) {
     this.cube.force.arm(state, this.computeFaceDots());
@@ -335,7 +348,7 @@ export class CubeScene {
   }
 
   private updateForceLayer() {
-    if (this.isBusy() || !this.cube.force.isArmed()) return;
+    if (this.isBusy() || this.isRotationLocked() || !this.cube.force.isArmed()) return;
     try {
       const update = this.cube.force.evaluate(this.computeFaceDots());
       if (update.baseline) {

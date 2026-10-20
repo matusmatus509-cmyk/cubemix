@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
-import { CubeStateData, FACE_COLORS, applyMove, MoveType, FaceKey, FaceColor, createSolvedState } from './CubeState';
+import { CubeStateData, FACE_COLORS, applyMove, MoveType, FaceKey, FaceColor, createSolvedState, isSolved } from './CubeState';
 import {
   FACE_KEYS,
   FACE_NORMAL,
@@ -22,6 +22,7 @@ const BODY_RADIUS = 0.08;
 const BODY_SEGMENTS = 5;
 // Corner radius of the rounded sticker (as a fraction of the sticker size)
 const STICKER_CORNER_RADIUS = 0.12;
+export const MIN_START_MIX_TURNS = 5;
 const SNAP_ANIM_DURATION = 220; // ms for snap animation after release
 
 /** Complete snapshot of a single cubie for Force Cube storage */
@@ -168,6 +169,7 @@ export class RubiksCube {
   private onMoveCb?: (move: MoveType) => void;
   private onMotionStartCb?: () => void;
   private realLayerInMotion = false;
+  private completedStartTurns = 0;
   private cubeState: CubeStateData;
   private activeDrag: DragSession | null = null;
   private activePivot: THREE.Group | null = null;
@@ -185,6 +187,7 @@ export class RubiksCube {
     this.cubeGroup = cubeGroup;
     assertCubeState(initialState);
     this.cubeState = cloneCubeState(initialState);
+    this.completedStartTurns = isSolved(initialState) ? 0 : MIN_START_MIX_TURNS;
     this.buildCube(initialState);
   }
 
@@ -212,6 +215,9 @@ export class RubiksCube {
   }
 
   getState() { return cloneCubeState(this.cubeState); }
+  isRotationLocked() { return this.completedStartTurns < MIN_START_MIX_TURNS; }
+  unlockRotation() { this.completedStartTurns = MIN_START_MIX_TURNS; }
+  private noteCompletedMixTurn() { this.completedStartTurns = Math.min(MIN_START_MIX_TURNS, this.completedStartTurns + 1); }
   isCurrentlyAnimating() { return this.isAnimating; }
   isDragging() { return this.activeDrag !== null; }
   /** True if any drag, snap-settle, or programmatic animation is in progress. */
@@ -510,6 +516,7 @@ export class RubiksCube {
 
     this.onStateChangeCb?.(this.getState());
     if (move) {
+      this.noteCompletedMixTurn();
       this.onMoveCb?.(move);
     }
 
@@ -644,6 +651,7 @@ export class RubiksCube {
       this.animateLayer(cubies, axisVec, angle, ANIM_DURATION, () => {
         this.isAnimating = false;
         this.finishMotion();
+        if (!skipHistory) this.noteCompletedMixTurn();
         this.onStateChangeCb?.(this.getState());
         this.onMoveCb?.(move);
         callback?.();
@@ -667,6 +675,7 @@ export class RubiksCube {
     assertCubeState(state);
     this.cubeState = cloneCubeState(state);
     this.moveHistory = [];
+    this.unlockRotation();
     this.repaintStickers();
     this.onStateChangeCb?.(this.getState());
   }
@@ -713,6 +722,7 @@ export class RubiksCube {
     assertCubeState(state);
     this.animationEpoch++;
     this.cubeState = cloneCubeState(state);
+    this.completedStartTurns = isSolved(state) ? 0 : MIN_START_MIX_TURNS;
     this.isAnimating = false;
     this.activeDrag = null;
     this.activePivot = null;

@@ -35,8 +35,18 @@ sa vráti na skryté strany. Viditeľné strany sa pri miešaní správajú norm
 Otočenie celej kocky odhalí force vrstvu. Pôvodne viditeľné strany ju dostanú
 až po prechode mimo záberu. Keď už všetkých šesť strán zobrazuje force, celý
 uložený legálny stav sa naraz prevezme ako nový reálny základ. Ďalšie miešanie
-vychádza z neho a pripraví rovnaký force na ďalšie odhalenie. Netreba reset ani
-päť úvodných ťahov; otáčanie celej kocky nie je zamknuté.
+vychádza z neho a pripraví rovnaký force na ďalšie odhalenie. Netreba reset.
+
+Pri zloženom štarte aplikácie a po Reset sa celá kocka dá otáčať až po
+piatich dokončených ťahoch vrstiev. Zrušený drag, ťuknutie a automatické ťahy
+riešiča sa nepočítajú. Po odhalení force zostáva otáčanie voľné.
+
+**Dvojité ťuknutie na rovnaký rohový dielik kocky** ukončí aktuálny force:
+celá kocka prevezme presný uložený stav a force sa odstráni z aktuálnej hry.
+Ďalšie miešanie, otáčanie, Solve ani Reset ho už neaktivujú. Uložené presety
+zostávajú zachované a dajú sa znova načítať ručne; ďalšie spustenie aplikácie
+sa riadi nastavením force pri štarte. Gesto funguje myšou aj dotykom, neplatí
+na stredy a hrany a neaktivuje sa pri ťahaní alebo dlhom podržaní.
 
 Zobrazovací prekryv počas prechodu nie je jeden fyzický šesťstranový stav:
 spája reálnu a force vrstvu. Do reálneho stavu sa nikdy nekopírujú jednotlivé

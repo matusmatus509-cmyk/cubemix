@@ -32,8 +32,14 @@ function renderedState() {
 }
 const moves: MoveType[] = ['R', "R'", 'L', "L'", 'U', "U'", 'D', "D'", 'F', "F'", 'B', "B'", 'M', "M'", 'E', "E'", 'S', "S'"];
 let expected = createSolvedState();
+assert.equal(cube.isRotationLocked(),true,'solved start locks orbit even without a force');
+let completed = 0;
 for (const move of moves) {
-  cube.executeMove(move); flush();
+  cube.executeMove(move);
+  assert.equal(cube.isRotationLocked(),completed < 5,'in-flight turns do not count');
+  flush();
+  completed++;
+  assert.equal(cube.isRotationLocked(),completed < 5,'exactly five completed turns unlock orbit');
   expected = applyMove(expected, move);
   assert.deepEqual(cube.getState(), expected);
   assert.deepEqual(renderedState(), expected, `rendered stickers after ${move}`);
@@ -43,6 +49,7 @@ const hidden = createSolvedState();
 [hidden.D[7],hidden.B[7]] = [hidden.B[7],hidden.D[7]];
 [hidden.B[5],hidden.L[3]] = [hidden.L[3],hidden.B[5]];
 cube.commitForceBaseline(hidden);
+assert.equal(cube.isRotationLocked(),false,'a revealed force remains free to show every face');
 expected = structuredClone(hidden);
 assert.deepEqual(renderedState(), expected);
 // Queue many turns together, then verify geometry independently of getState().
@@ -69,6 +76,7 @@ cube.setState(createSolvedState()); flush();
 assert.deepEqual(renderedState(), createSolvedState());
 cube.executeMove('R'); cube.executeMove('U'); cube.setState(createSolvedState()); flush();
 assert.deepEqual(renderedState(), createSolvedState());
+assert.equal(cube.isRotationLocked(),true,'reset discards in-flight and queued turn counts');
 assert.equal(group.children.length, 27, 'no abandoned pivot groups after reset');
 const copy = cube.getState(); copy.U[0] = 'X';
 assert.deepEqual(cube.getState(), createSolvedState());
@@ -86,5 +94,13 @@ cube.setDragAngle(.5); cube.cancelDrag(); flush();
 assert.deepEqual(cube.getState(),createSolvedState(),'cancelled force drag preserves real state');
 cube.force.clear(); cube.repaintStickers();
 assert.deepEqual(renderedState(),createSolvedState());
+assert.equal(cube.isRotationLocked(),true,'cancelled drags never count toward five');
+for (let i = 0; i < 5; i++) { cube.executeMove('R',undefined,true); flush(); }
+assert.equal(cube.isRotationLocked(),true,'solver moves do not count toward initial mixing');
+for (let i = 0; i < 4; i++) { cube.executeMove('U'); flush(); }
+assert.equal(cube.isRotationLocked(),true,'four normal moves are not enough');
+cube.beginDrag('x',1,v); cube.setDragAngle(Math.PI / 2); cube.endDrag(); flush();
+assert.equal(cube.isRotationLocked(),false,'a completed drag counts as the fifth turn');
+
 cube.destroy(); flush(); assert.equal(group.children.length,0);
 console.log('Animation: all 18 moves and drags, 100 queued turns, snap exclusion, reset cancellation, rendered state and disposal passed.');

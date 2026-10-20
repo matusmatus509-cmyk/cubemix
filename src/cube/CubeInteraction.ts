@@ -32,6 +32,8 @@ interface DragState {
 
 interface PointerState {
   down: boolean;
+  startedAt: number;
+  moved: boolean;
   startX: number;
   startY: number;
   lastX: number;
@@ -53,6 +55,8 @@ export class CubeInteraction {
   private cubeGroup: THREE.Group;
   private ptr: PointerState;
   private enabled = true;
+  private lastCornerTap: {time: number; x: number; y: number; corner: string} | null = null;
+  onDoubleCornerTap?: () => void;
 
   private readonly MIN_DRAG_PX = 8;
   private readonly ORBIT_SENSITIVITY = 0.008;
@@ -76,7 +80,7 @@ export class CubeInteraction {
 
   private fresh(): PointerState {
     return {
-      down: false, startX: 0, startY: 0, lastX: 0, lastY: 0,
+      down: false, startedAt: 0, moved: false, startX: 0, startY: 0, lastX: 0, lastY: 0,
       hitPoint: null, hitNormalLocal: null, hitCubiePos: null,
       onCube: false, candidates: null, drag: null, cubeGroupRotating: false,
     };
@@ -234,12 +238,15 @@ export class CubeInteraction {
   private onPointerDown = (e: MouseEvent | TouchEvent) => {
     // Block new input while a drag, snap-settle, or programmatic animation
     // is still in progress — prevents a second turn from starting mid-snap.
+    if ('touches' in e && e.touches.length !== 1) { this.cancel(); return; }
     if (!this.enabled || this.ptr.down || this.cube.isBusy()) return;
+    if (!('touches' in e) && e.button !== 0) { this.lastCornerTap = null; return; }
     e.preventDefault();
 
     const p = this.pos(e);
     this.ptr = this.fresh();
     this.ptr.down = true;
+    this.ptr.startedAt = performance.now();
     this.ptr.startX = p.x;
     this.ptr.startY = p.y;
     this.ptr.lastX = p.x;
@@ -282,17 +289,17 @@ export class CubeInteraction {
 
   private onPointerMove = (e: MouseEvent | TouchEvent) => {
     if (!this.enabled || !this.ptr.down) return;
+    if ('touches' in e && e.touches.length !== 1) { this.cancel(); return; }
     e.preventDefault();
 
     const p = this.pos(e);
     const dx = p.x - this.ptr.lastX;
     const dy = p.y - this.ptr.lastY;
+    if (Math.hypot(p.x - this.ptr.startX, p.y - this.ptr.startY) >= this.MIN_DRAG_PX) this.ptr.moved = true;
 
     if (!this.ptr.onCube) {
-      // Whole-cube rotation — locked while the force layer is armed and the cube
-      // has not been mixed enough to cover it. Swallowing the gesture silently
-      // is deliberate: a visible refusal would be a tell.
-      if (!this.cube.force.isRotationLocked()) {
+      // A solved start needs five completed layer turns before whole-cube orbit.
+      if (!this.cube.isRotationLocked()) {
         this.ptr.cubeGroupRotating = true;
         this.rotateCubeByScreenDelta(dx, dy);
       }
@@ -371,8 +378,16 @@ export class CubeInteraction {
     this.ptr.lastY = p.y;
   };
 
-  private onPointerUp = (_e: MouseEvent | TouchEvent) => {
+  private onPointerUp = (e: MouseEvent | TouchEvent) => {
     if (!this.ptr.down) return;
+    if ('touches' in e && e.touches.length !== 0) { this.cancel(); return; }
+    const point = this.pos(e);
+    const pos = this.ptr.hitCubiePos;
+    const isTap = !this.ptr.moved && !this.ptr.drag && !this.ptr.cubeGroupRotating &&
+      Math.hypot(point.x - this.ptr.startX, point.y - this.ptr.startY) < this.MIN_DRAG_PX &&
+      performance.now() - this.ptr.startedAt <= 350;
+    const corner = isTap && pos && [pos.x,pos.y,pos.z].every(v => Math.abs(v) === 1)
+      ? [pos.x,pos.y,pos.z].join(',') : null;
 
     if (this.cube.isDragging()) {
       // If the finger paused before lifting, the flick is stale — ignore it.
@@ -385,6 +400,14 @@ export class CubeInteraction {
     }
 
     this.ptr = this.fresh();
+    if (!corner || !this.cube.force.isConfigured()) { this.lastCornerTap = null; return; }
+    const now = performance.now();
+    const previous = this.lastCornerTap;
+    if (previous && previous.corner === corner && now - previous.time <= 350 &&
+        Math.hypot(point.x - previous.x, point.y - previous.y) <= 32) {
+      this.lastCornerTap = null;
+      this.onDoubleCornerTap?.();
+    } else this.lastCornerTap = {time:now, x:point.x, y:point.y, corner};
   };
 
   private bindEvents() {
@@ -407,6 +430,7 @@ export class CubeInteraction {
   cancel() {
     this.cube.cancelDrag();
     this.ptr = this.fresh();
+    this.lastCornerTap = null;
   }
 
   setEnabled(enabled: boolean) {
