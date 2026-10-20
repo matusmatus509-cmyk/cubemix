@@ -231,9 +231,11 @@ function ForcePanel({
             </div>
             <div className="force-hint">
               <p><strong>Dve vrstvy:</strong> pri miešaní sa vždy ukazuje reálny stav kocky. Všetky tri skryté strany majú pripravený presný force.</p>
+              <p><strong>Zložený štart:</strong> najprv urob aspoň 5 ťahov vrstiev. Až potom sa odomkne otáčanie celej kocky.</p>
               <p><strong>Otoč celú kocku:</strong> odkryješ force. Strany, ktoré schováš, si prevezmú zvyšok force.</p>
               <p><strong>Nový východiskový bod:</strong> po úplnom odhalení sa celá kocka stane uloženým force stavom.</p>
               <p><strong>Opakovanie:</strong> opäť miešaj normálne a otočením kocky znovu odhalíš rovnaký force. Reset netreba.</p>
+              <p><strong>Ukonči force:</strong> dvakrát rýchlo ťukni na ten istý roh kocky. Zostane v presnom force stave, ďalej sa už mieša a skladá normálne. Force sa znovu zapne až ručným načítaním presetu alebo podľa nastavenia pri ďalšom spustení aplikácie.</p>
             </div>
 
             {/* ── Divider ── */}
